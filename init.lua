@@ -20,16 +20,14 @@ vim.opt.shiftwidth = 2
 vim.opt.tabstop = 2
 vim.opt.smartindent = true
 vim.opt.autoindent = true
-vim.opt.wrap = false
+vim.opt.wrap = true
 vim.opt.linebreak = true
+vim.opt.breakindent = true
+vim.opt.showbreak = "↪ "
 
 -- Themes
 vim.o.background = "light";
 vim.opt.termguicolors = true
-
--- YCM Configuration
-vim.g.ycm_always_population_location_list = 1
-vim.g.ycm_global_ycm_extra_conf = "~/.vim/.ycm_global_extra_conf.py"
 
 -- Searching
 vim.opt.smartcase = true
