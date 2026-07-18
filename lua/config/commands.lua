@@ -1,3 +1,4 @@
+-- C++ Quick Version Change
 vim.api.nvim_create_user_command("CppStd", function(opts)
   vim.g.cpp_std = opts.args
 
@@ -6,22 +7,23 @@ vim.api.nvim_create_user_command("CppStd", function(opts)
     vim.log.levels.INFO
   )
 
-  vim.cmd("LspRestart clangd")
+  vim.cmd("lsp restart clangd")
 end, {
-  nargs = 1,
+nargs = 1,
 
-  complete = function()
-    return {
-      "c++11",
-      "c++14",
-      "c++17",
-      "c++20",
-      "c++23",
-      "c++26",
-    }
-  end,
+complete = function()
+  return {
+    "c++11",
+    "c++14",
+    "c++17",
+    "c++20",
+    "c++23",
+    "c++26",
+  }
+end,
 })
 
+-- LSP Log command
 vim.api.nvim_create_user_command("LspLog", function()
   local path = vim.lsp.log.get_filename()
 
@@ -29,5 +31,5 @@ vim.api.nvim_create_user_command("LspLog", function()
     "edit " .. vim.fn.fnameescape(path)
   )
 end, {
-  desc = "Open Neovim LSP log",
+desc = "Open Neovim LSP log",
 })
