@@ -7,6 +7,13 @@ return {
     "nvim-telescope/telescope.nvim",
     "nvim-lua/plenary.nvim",
   },
+  keys = {
+    {
+      "<leader>e",
+      "<cmd>NvimTreeToggle<CR>",
+      desc = "Toggle file explorer",
+    },
+  },
   config = function()
     local api = require("nvim-tree.api")
     local telescope = require("telescope.builtin")
@@ -28,7 +35,7 @@ return {
 
         -- Tab
         vim.keymap.set('n', '<leader>t', api.node.open.tab, {
-          desc = 'nvim-tree: Open in New Tab', 
+          desc = 'nvim-tree: Open in New Tab',
           buffer = bufnr,
           noremap = true,
           silent = true,
