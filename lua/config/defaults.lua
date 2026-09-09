@@ -38,6 +38,10 @@ local M = {
 
       rust = "rust_analyzer",
       lua = "lua_ls",
+
+      tex = "texlab",
+      plaintex = "texlab",
+      bib = "texlab",
     },
   },
 

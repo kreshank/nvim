@@ -9,6 +9,19 @@ return {
   {
     "williamboman/mason.nvim",
     opts = {},
+    config = function(_, opts)
+      require("mason").setup(opts)
+
+      local registry = require("mason-registry")
+
+      registry.refresh(function()
+        local package = registry.get_package("latexindent")
+
+        if not package:is_installed() then
+          package:install()
+        end
+      end)
+    end,
   },
 
   {
@@ -25,6 +38,8 @@ return {
         "ruff",
         "rust_analyzer",
         "lua_ls",
+        "texlab",
+        "ltex_plus",
       },
     },
   },
@@ -144,11 +159,54 @@ return {
         },
       })
 
+      vim.lsp.config("texlab", {
+        settings = {
+          texlab = {
+            build = {
+              onSave = true,
+              forwardSearchAfter = true,
+            },
+
+            forwardSearch = {
+              executable = "zathura",
+              args = {
+                "--synctex-forward",
+                "%l:1:%f",
+                "%p",
+              },
+            },
+
+            chktex = {
+              onOpenAndSave = true,
+              onEdit = false,
+            },
+          },
+        },
+      })
+
+      vim.lsp.config("ltex_plus", {
+        filetypes = {
+          "tex",
+          "plaintex",
+          "bib",
+        },
+
+        settings = {
+          ltex = {
+            language = "en-US",
+            checkFrequency = "save",
+          },
+        },
+      })
+
       vim.lsp.enable({
         "clangd",
         "pyright",
+        "jdtls",
         "rust_analyzer",
         "lua_ls",
+        "texlab",
+        "ltex_plus",
       })
     end,
   },
