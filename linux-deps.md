@@ -13,6 +13,7 @@ sudo apt install -y \
   python3 python3.12 \
   openjdk-17-jdk \
   git ripgrep fd-find \
+  sshfs fuse3 \
   latexmk chktex \
   texlive-latex-base texlive-latex-recommended \
   texlive-latex-extra texlive-science texlive-fonts-recommended \
@@ -31,8 +32,6 @@ ln -sf "$(command -v fdfind)" ~/.local/bin/fd
 
 ## Core / Neovim host
 
-**Used by:** Neovim itself (`init.lua` sets `python3_host_prog`)
-
 | Need | Why |
 |------|-----|
 | Neovim 0.11+ | Native `vim.lsp.config` / `vim.lsp.enable` |
@@ -47,6 +46,55 @@ Optional (remote plugins / `pynvim`):
 ```bash
 python3.12 -m pip install --user pynvim
 ```
+
+---
+
+## Remote SSH / SSHFS (local only)
+
+Nothing is installed on the remote host. Neovim stays on this machine. The remote only needs `sshd` (and language servers already on its `PATH` if you want remote LSP).
+
+| Need | Why |
+|------|-----|
+| `ssh` | ControlMaster sessions, remote LSP stdio, probes |
+| `sshfs` + FUSE | Mount remote trees so nvim-tree / Telescope / buffers see normal local paths |
+| `fusermount3` | Explicit unmount (`:RemoteDisconnect`) |
+| `~/.ssh/config` | Host aliases for the picker; ControlMaster multiplexing |
+| `~/.ssh/sockets/` | ControlMaster socket directory (`0700`) |
+
+```bash
+sudo apt install -y sshfs fuse3
+mkdir -p ~/.ssh/sockets
+chmod 700 ~/.ssh ~/.ssh/sockets
+```
+
+Authentication is **local only**: private keys stay in `~/.ssh` on this laptop. Nothing is copied onto the server. Both **public key** and **password / keyboard-interactive** are enabled; a floating terminal asks for a password or key passphrase when needed. After that, ControlMaster reuses the session (SSHFS, probes, remote LSP) so you are not prompted again until the mux expires.
+
+Create `~/.ssh/config` if it does not exist (OpenSSH will not accept `Path=` as a real keyword; project recents live in Neovim data, not on the server):
+
+```sshconfig
+Host *
+  ControlMaster auto
+  ControlPath ~/.ssh/sockets/%C
+  ControlPersist 4h
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+  PubkeyAuthentication yes
+  PasswordAuthentication yes
+  KbdInteractiveAuthentication yes
+  PreferredAuthentications publickey,keyboard-interactive,password
+  NumberOfPasswordPrompts 3
+  IdentitiesOnly no
+
+# Add aliases, for example:
+# Host desk
+#   HostName 192.168.1.10
+#   User kreshank
+#   IdentityFile ~/.ssh/id_ed25519_desk
+```
+
+Do **not** `rm -rf` a live FUSE mount. Unmount first (`:RemoteDisconnect`, or `fusermount3 -uz <mount>`).
+
+In Neovim: `:RemoteProject`, `:RemoteDisconnect`, `:RemoteShell`, `:RemoteLspMode`, `:RemoteGitToggle`.
 
 ---
 

@@ -29,15 +29,24 @@ function M.find_root(bufnr, max_depth)
     vim.api.nvim_buf_get_name(bufnr)
 
   local current
+  local mount_root
 
   if filename ~= "" then
     filename = vim.fs.normalize(filename)
     current = vim.fs.dirname(filename)
+    local ok, remote = pcall(require, "config.remote")
+    if ok then
+      mount_root = remote.mount_root_for_path(filename)
+    end
   else
     current = launch_directory
   end
 
   for _ = 0, max_depth do
+    if mount_root and current == mount_root then
+      return mount_root
+    end
+
     for _, marker in ipairs(defaults.project.markers) do
       local marker_path =
         vim.fs.joinpath(current, marker)
@@ -53,10 +62,14 @@ function M.find_root(bufnr, max_depth)
       break
     end
 
+    if mount_root and #parent < #mount_root then
+      break
+    end
+
     current = parent
   end
 
-  return launch_directory
+  return mount_root or launch_directory
 end
 
 ---Search downward for compile_commands.json.

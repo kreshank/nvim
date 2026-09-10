@@ -76,6 +76,22 @@ local M = {
     },
   },
 
+  remote = {
+    mount_base = vim.fn.stdpath("state") .. "/mnt",
+    sockets_dir = vim.fn.expand("$HOME/.ssh/sockets"),
+    control_persist = "4h",
+    recents_file = vim.fn.stdpath("data") .. "/remote-projects.json",
+    recents_max = 20,
+    ssh_probe_ms = 8000,
+    ssh_cmd_ms = 15000,
+    ssh_auth_ms = 120000,
+    sshfs_ms = 30000,
+    mount_ready_ms = 10000,
+    git_default = false,
+    path_proxy = vim.fn.stdpath("config")
+      .. "/scripts/lsp-path-proxy.py",
+  },
+
   project = {
     root_search_depth = 5,
     compile_commands_search_depth = 3,

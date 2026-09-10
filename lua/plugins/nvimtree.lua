@@ -78,9 +78,28 @@ return {
           nowait = true
         })
     end,
+    sync_root_with_cwd = true,
     git = {
       enable = true,
-      ignore = false,
+      timeout = 400,
+      disable_for_dirs = function(path)
+        return require("config.remote").should_disable_tree_git(path)
+      end,
+    },
+    filters = {
+      git_ignored = false,
+    },
+    filesystem_watchers = {
+      enable = true,
+      ignore_dirs = function(path)
+        if require("config.remote").is_mount_path(path) then
+          return true
+        end
+        local name = vim.fn.fnamemodify(path, ":t")
+        return name == "node_modules"
+          or name == ".git"
+          or name == ".cache"
+      end,
     },
     renderer = {
       highlight_git = true,
@@ -114,7 +133,7 @@ return {
     },
     update_focused_file = {
       enable = true,
-      update_cwd = true,
+      update_root = false,
     },
     actions = {
       open_file = {

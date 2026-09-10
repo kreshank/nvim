@@ -29,6 +29,17 @@ return {
       },
       auto_attach = true,
       attach_to_untracked = false,
+      on_attach = function(bufnr)
+        local ok, remote = pcall(require, "config.remote")
+        if ok then
+          local path = vim.api.nvim_buf_get_name(bufnr)
+          if remote.is_mount_path(path)
+            and not remote.git_enabled_for_path(path)
+          then
+            return false
+          end
+        end
+      end,
       current_line_blame = false,
       current_line_blame_opts = {
         virt_text = true,

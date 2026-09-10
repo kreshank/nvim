@@ -1,4 +1,5 @@
 local defaults = require("config.defaults")
+local lsp = require("config.lsp")
 
 local function get_formatters(bufnr)
   return vim.lsp.get_clients({
@@ -33,7 +34,7 @@ local function select_formatter(bufnr)
 
   if preferred then
     for _, client in ipairs(clients) do
-      if client.name == preferred then
+      if lsp.logical_name(client.name) == preferred then
         return client
       end
     end
