@@ -90,6 +90,19 @@ local M = {
     git_default = false,
     path_proxy = vim.fn.stdpath("config")
       .. "/scripts/lsp-path-proxy.py",
+    -- FUSE flags shared by sshfs.nvim and :RemoteProject.
+    -- Access is the SSH login, not local UID matching. idmap is display-only.
+    sshfs_options = {
+      reconnect = true,
+      ConnectTimeout = 15,
+      compression = "no",
+      ServerAliveInterval = 15,
+      ServerAliveCountMax = 3,
+      dir_cache = "yes",
+      dcache_timeout = 300,
+      dcache_max_size = 10000,
+      cache = "yes",
+    },
   },
 
   project = {

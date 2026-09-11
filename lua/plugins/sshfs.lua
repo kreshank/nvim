@@ -1,4 +1,5 @@
 local defaults = require("config.defaults")
+local remote = require("config.remote")
 
 return {
   "uhs-robert/sshfs.nvim",
@@ -10,17 +11,7 @@ return {
   },
   opts = {
     connections = {
-      sshfs_options = {
-        reconnect = true,
-        ConnectTimeout = 15,
-        compression = "no",
-        ServerAliveInterval = 15,
-        ServerAliveCountMax = 3,
-        dir_cache = "yes",
-        dcache_timeout = 300,
-        dcache_max_size = 10000,
-        cache = "yes",
-      },
+      sshfs_options = remote.sshfs_options(),
       control_persist = defaults.remote.control_persist,
       socket_dir = defaults.remote.sockets_dir,
     },

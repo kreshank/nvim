@@ -56,7 +56,7 @@ Nothing is installed on the remote host. Neovim stays on this machine. The remot
 | Need | Why |
 |------|-----|
 | `ssh` | ControlMaster sessions, remote LSP stdio, probes |
-| `sshfs` + FUSE | Mount remote trees so nvim-tree / Telescope / buffers see normal local paths |
+| `sshfs` + FUSE | Mount remote trees as local paths. Opens go through the SSH ControlMaster, not local UID checks. |
 | `fusermount3` | Explicit unmount (`:RemoteDisconnect`) |
 | `~/.ssh/config` | Host aliases for the picker; ControlMaster multiplexing |
 | `~/.ssh/sockets/` | ControlMaster socket directory (`0700`) |
@@ -67,7 +67,7 @@ mkdir -p ~/.ssh/sockets
 chmod 700 ~/.ssh ~/.ssh/sockets
 ```
 
-Authentication is **local only**: private keys stay in `~/.ssh` on this laptop. Nothing is copied onto the server. Both **public key** and **password / keyboard-interactive** are enabled; a floating terminal asks for a password or key passphrase when needed. After that, ControlMaster reuses the session (SSHFS, probes, remote LSP) so you are not prompted again until the mux expires.
+Authentication is **local only**: private keys stay in `~/.ssh` on this laptop. Nothing is copied onto the server. Both **public key** and **password / keyboard-interactive** are enabled; a floating terminal asks for a password or key passphrase when needed. The password UI for a new mount is SSHFS in a floating terminal. That SSHFS process keeps its own SSH connection (`ControlMaster=no`) so file opens do not depend on Neovim's ControlMaster surviving. Timeouts do not tear an existing mux down.
 
 Create `~/.ssh/config` if it does not exist (OpenSSH will not accept `Path=` as a real keyword; project recents live in Neovim data, not on the server):
 

@@ -93,8 +93,8 @@ done
 ]]
 
   remote.ssh_run(host, {
-    "bash",
-    "-lc",
+    "sh",
+    "-c",
     script,
   }, defaults.remote.ssh_cmd_ms, function(ok, stdout)
     local found = {}

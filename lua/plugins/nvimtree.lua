@@ -29,27 +29,90 @@ return {
       })
     end
 
+    -- Open SSHFS files in a real editor window via nvim-tree's opener.
+    -- `:edit` in the tree window + tree.close() discarded the buffer
+    -- with no message. Use absolute_path so symlink link_to (a remote
+    -- /home/ryan/... path) is never opened on the laptop.
+    local function open_tree_node(mode)
+      mode = mode or "edit"
+      local node = api.tree.get_node_under_cursor()
+      if not node then
+        return
+      end
+      if node.type == "directory" or node.type == "directory_link" then
+        api.node.open.edit()
+        return
+      end
+      local path = node.absolute_path
+      if path and require("config.remote").is_mount_path(path) then
+        require("nvim-tree.actions.node.open-file").fn(mode, path)
+        return
+      end
+      if mode == "tabnew" then
+        api.node.open.tab()
+      elseif mode == "vsplit" then
+        api.node.open.vertical()
+      elseif mode == "split" then
+        api.node.open.horizontal()
+      else
+        api.node.open.edit()
+      end
+    end
+
     require("nvim-tree").setup({
       on_attach = function(bufnr)
         api.config.mappings.default_on_attach(bufnr)
 
+        vim.keymap.set("n", "<CR>", function()
+          open_tree_node("edit")
+        end, {
+          desc = "nvim-tree: Open",
+          buffer = bufnr,
+          noremap = true,
+          silent = true,
+          nowait = true,
+        })
+        vim.keymap.set("n", "o", function()
+          open_tree_node("edit")
+        end, {
+          desc = "nvim-tree: Open",
+          buffer = bufnr,
+          noremap = true,
+          silent = true,
+          nowait = true,
+        })
+        vim.keymap.set("n", "<2-LeftMouse>", function()
+          open_tree_node("edit")
+        end, {
+          desc = "nvim-tree: Open",
+          buffer = bufnr,
+          noremap = true,
+          silent = true,
+          nowait = true,
+        })
+
         -- Tab
-        vim.keymap.set('n', '<leader>t', api.node.open.tab, {
+        vim.keymap.set('n', '<leader>t', function()
+          open_tree_node("tabnew")
+        end, {
           desc = 'nvim-tree: Open in New Tab',
           buffer = bufnr,
           noremap = true,
           silent = true,
           nowait = true
         })
-        -- Splits
-        vim.keymap.set('n', '<leader>v', api.node.open.vertical, {
+        vim.keymap.set('n', '<leader>v', function()
+          open_tree_node("vsplit")
+        end, {
           desc = 'nvim-tree: Open vertical split',
           buffer = bufnr,
           noremap = true,
           silent = true,
           nowait = true
         })
-        vim.keymap.set('n', '<leader>h', api.node.open.horizontal, {
+        vim.keymap.set('n', '<leader>h', function()
+          open_tree_node("split")
+        end, {
           desc = 'nvim-tree: Open horizontal split',
           buffer = bufnr,
           noremap = true,
@@ -138,6 +201,8 @@ return {
     actions = {
       open_file = {
         quit_on_open = true,
+        -- Relative paths break :edit on SSHFS when cwd is not the mount.
+        relative_path = false,
       },
     },
   })

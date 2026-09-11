@@ -201,6 +201,37 @@ function M.should_disable_tree_git(path)
   return proj.git_enabled ~= true
 end
 
+---Display mapping only. Do not use FUSE uid=/gid= for access: sshfs
+---already allows whatever the SSH user can do, and numeric UIDs differ
+---on every campus host.
+---@return table
+function M.sshfs_identity()
+  return { idmap = "user" }
+end
+
+---@param extra? table
+---@return table
+function M.sshfs_options(extra)
+  return vim.tbl_extend(
+    "force",
+    {},
+    defaults.remote.sshfs_options,
+    M.sshfs_identity(),
+    extra or {}
+  )
+end
+
+local function keep_editor_state_local(ev)
+  local path = ev.match ~= "" and ev.match or vim.api.nvim_buf_get_name(ev.buf)
+  if not M.is_mount_path(path) then
+    return
+  end
+
+  -- Swap/undo next to the file uses FUSE write + kernel ownership checks.
+  vim.bo[ev.buf].swapfile = false
+  vim.bo[ev.buf].undofile = false
+end
+
 ---OpenSSH client options. Pubkey and password/keyboard-interactive are both
 ---on; private keys are never copied to the remote.
 ---@param opts? { batch?: boolean, master?: "yes"|"auto", connect_timeout?: integer }
@@ -272,6 +303,72 @@ function M.drop_control_master(host)
 end
 
 ---@param host string
+---@return string[]
+function M.mux_check_argv(host)
+  local cmd = { "ssh" }
+  for _, opt in ipairs(M.ssh_client_options({ batch = true })) do
+    if opt:match("^ControlPath=") then
+      table.insert(cmd, "-o")
+      table.insert(cmd, opt)
+    end
+  end
+  table.insert(cmd, "-O")
+  table.insert(cmd, "check")
+  table.insert(cmd, host)
+  return cmd
+end
+
+---@param host string
+---@param timeout_ms integer
+---@param callback fun(ok: boolean)
+local function wait_until_mux(host, timeout_ms, callback)
+  local started = vim.uv.now()
+  local timer = vim.uv.new_timer()
+  if not timer then
+    callback(false)
+    return
+  end
+
+  local settled = false
+  local in_flight = false
+
+  local function finish(ok)
+    if settled then
+      return
+    end
+    settled = true
+    timer:stop()
+    timer:close()
+    callback(ok)
+  end
+
+  timer:start(0, 150, function()
+    if settled or in_flight then
+      return
+    end
+    in_flight = true
+    vim.system(M.mux_check_argv(host), {
+      text = true,
+      timeout = 2000,
+    }, function(obj)
+      vim.schedule(function()
+        in_flight = false
+        if settled then
+          return
+        end
+        if obj.code == 0 then
+          finish(true)
+          return
+        end
+        if vim.uv.now() - started > timeout_ms then
+          finish(false)
+        end
+      end)
+    end)
+  end)
+end
+
+---@param host string
 ---@param remote_argv string[]
 ---@param timeout_ms? integer
 ---@param callback fun(ok: boolean, stdout: string, err: string|nil)
@@ -294,7 +391,7 @@ function M.ssh_run(host, remote_argv, timeout_ms, callback, opts)
       end
 
       if obj.signal then
-        if opts.drop_mux_on_timeout ~= false then
+        if opts.drop_mux_on_timeout then
           M.drop_control_master(host)
         end
         callback(false, stdout, "ssh timed out")
@@ -325,6 +422,8 @@ end
 local function open_auth_terminal(host, callback)
   vim.fn.mkdir(defaults.remote.sockets_dir, "p", "0700")
 
+  -- Real TTY password prompt. ControlPersist keeps the master after `exit`.
+  -- Do not use ssh -N as a Neovim job: closing that window kills SSH.
   local cmd = { "ssh", "-tt" }
   for _, opt in ipairs(M.ssh_client_options({
     batch = false,
@@ -367,17 +466,22 @@ local function ensure_ssh_auth(host, callback)
           return
         end
 
-        -- Confirm the mux is usable before SSHFS/LSP (still no password prompt).
-        M.ssh_run(host, { "true" }, defaults.remote.ssh_probe_ms, function(ready)
-          if ready then
-            callback(true)
-            return
-          end
-          callback(
-            false,
-            "SSH login succeeded but the shared connection is not ready"
-          )
-        end)
+        M.ssh_run(
+          host,
+          { "true" },
+          defaults.remote.ssh_probe_ms,
+          function(ready)
+            if ready then
+              callback(true)
+              return
+            end
+            callback(
+              false,
+              "SSH login succeeded but the shared connection is not ready"
+            )
+          end,
+          { drop_mux_on_timeout = false }
+        )
       end)
     end)
   end)
@@ -477,35 +581,85 @@ local function apply_tree_root(mount_path, host, remote_root)
   end)
 end
 
----@param host string
----@param mount_point string
----@param remote_suffix string
----@param callback fun(ok: boolean, err?: string)
-local function mount_via_mux(host, mount_point, remote_suffix, callback)
-  local Config = require("sshfs.config")
-  local Ssh = require("sshfs.lib.ssh")
-  local opts = Config.get()
+---@param extra? table
+---@return string[]
+local function sshfs_dash_o(extra)
   local options = {}
-
-  for key, value in pairs(opts.connections.sshfs_options or {}) do
+  local merged = M.sshfs_options(extra)
+  for key, value in pairs(merged) do
     if value == true then
       table.insert(options, key)
     elseif value ~= false and value ~= nil then
       table.insert(options, string.format("%s=%s", key, tostring(value)))
     end
   end
+  return options
+end
 
-  -- Reuse the ControlMaster from the password prompt. Do not use
-  -- ControlMaster=yes here — that starts a second session and asks again.
-  table.insert(options, "ssh_command=" .. Ssh.build_command_string("socket"))
+---@param mount_path string
+---@return boolean
+local function mount_files_readable(mount_path)
+  local function first_file(dir, depth)
+    local req = vim.uv.fs_scandir(dir)
+    if not req then
+      return nil
+    end
+    local subdirs = {}
+    while true do
+      local name, kind = vim.uv.fs_scandir_next(req)
+      if not name then
+        break
+      end
+      local path = dir .. "/" .. name
+      if kind == "file" or kind == "link" then
+        return path
+      end
+      if kind == "directory" and depth > 0 then
+        table.insert(subdirs, path)
+      end
+    end
+    for _, sub in ipairs(subdirs) do
+      local found = first_file(sub, depth - 1)
+      if found then
+        return found
+      end
+    end
+  end
 
+  local path = first_file(mount_path, 2) or mount_path
+  local fd = vim.uv.fs_open(path, "r", 0)
+  if not fd then
+    return false
+  end
+  vim.uv.fs_close(fd)
+  return true
+end
+
+local function unmount_path(mount_path)
+  local ok, MountPoint = pcall(require, "sshfs.lib.mount_point")
+  if ok then
+    pcall(MountPoint.unmount, mount_path)
+  end
+end
+
+---@param host string
+---@param mount_point string
+---@param remote_suffix string
+---@param callback fun(ok: boolean, err?: string)
+local function mount_via_mux(host, mount_point, remote_suffix, callback)
+  local Ssh = require("sshfs.lib.ssh")
   local spec = host .. ":" .. remote_suffix
   local cmd = {
     "sshfs",
     spec,
     mount_point,
     "-o",
-    table.concat(options, ","),
+    table.concat(
+      sshfs_dash_o({
+        ssh_command = Ssh.build_command_string("socket"),
+      }),
+      ","
+    ),
   }
 
   vim.system(cmd, {
@@ -529,6 +683,67 @@ local function mount_via_mux(host, mount_point, remote_suffix, callback)
   end)
 end
 
+---SSHFS keeps its own ssh child. A ControlMaster owned by the Neovim
+---password window dies when that window closes, which makes every open fail.
+---@param host string
+---@param mount_point string
+---@param remote_suffix string
+---@param callback fun(ok: boolean, err?: string)
+local function mount_in_terminal(host, mount_point, remote_suffix, callback)
+  vim.fn.mkdir(defaults.remote.sockets_dir, "p", "0700")
+
+  local spec = host .. ":" .. remote_suffix
+  local cmd = {
+    "sshfs",
+    spec,
+    mount_point,
+    "-o",
+    table.concat(
+      sshfs_dash_o({
+        -- Independent of Neovim's ControlMaster. Sharing that socket is
+        -- what made tree listings work while every :edit failed.
+        ssh_command = "ssh -o ControlMaster=no -o ControlPath=none",
+      }),
+      ","
+    ),
+  }
+
+  with_tmux_term(function(previous)
+    local Terminal = require("sshfs.ui.terminal")
+    Terminal.open_auth_floating(cmd, host, function(success)
+      restore_term(previous)
+      if not success then
+        callback(false, "SSHFS authentication failed for " .. host)
+        return
+      end
+      callback(true)
+    end)
+  end)
+end
+
+local function wait_for_readable_mount(mount_path, timeout_ms, callback)
+  local started = vim.uv.now()
+  wait_until_mounted(mount_path, timeout_ms, function(mounted)
+    if not mounted then
+      callback(false, "mount did not become visible")
+      return
+    end
+
+    local function tick()
+      if mount_files_readable(mount_path) then
+        callback(true)
+        return
+      end
+      if vim.uv.now() - started > timeout_ms then
+        callback(false, "mounted but files are not readable")
+        return
+      end
+      vim.defer_fn(tick, 150)
+    end
+    tick()
+  end)
+end
+
 ---@param host string
 ---@param remote_path string
 ---@param opts? { prompt_lsp?: boolean }
@@ -537,101 +752,74 @@ function M.open_project(host, remote_path, opts, callback)
   opts = opts or {}
   callback = callback or function() end
 
-  ensure_ssh_auth(host, function(auth_ok, auth_err)
-    if not auth_ok then
-      vim.notify(auth_err or "SSH auth failed", vim.log.levels.ERROR)
-      callback(nil, auth_err)
+  local remote_root = to_sshfs_suffix(remote_path)
+  local mount_path = M.mount_path_for(host, remote_root)
+  local MountPoint = require("sshfs.lib.mount_point")
+  local Lockfile = require("sshfs.lib.lockfile")
+
+  local function finish(already_mounted)
+    local proj = M.remember(host, remote_root, {
+      mount_path = mount_path,
+    })
+    state.current = proj
+    apply_tree_root(mount_path, host, remote_root)
+    require("config.remote_lsp").ensure(proj, {
+      prompt = opts.prompt_lsp ~= false and not already_mounted,
+    })
+    callback(proj)
+  end
+
+  local function fail(err)
+    vim.notify("SSHFS mount failed: " .. tostring(err), vim.log.levels.ERROR)
+    callback(nil, err)
+  end
+
+  local function after_sshfs(ok, err)
+    if not ok then
+      fail(err)
       return
     end
 
-    local remote_root = to_sshfs_suffix(remote_path)
-    local mount_path = M.mount_path_for(host, remote_root)
-    local MountPoint = require("sshfs.lib.mount_point")
-    local Lockfile = require("sshfs.lib.lockfile")
+    wait_for_readable_mount(
+      mount_path,
+      defaults.remote.mount_ready_ms,
+      function(readable, read_err)
+        if not readable then
+          unmount_path(mount_path)
+          fail(read_err)
+          return
+        end
+        pcall(Lockfile.register, mount_path)
+        remote_root = mounted_remote_path(mount_path) or remote_root
+        finish(false)
+      end
+    )
+  end
 
-    local function finish(already_mounted)
-      local proj = M.remember(host, remote_root, {
-        mount_path = mount_path,
-      })
-      state.current = proj
-      apply_tree_root(mount_path, host, remote_root)
-      require("config.remote_lsp").ensure(proj, {
-        prompt = opts.prompt_lsp ~= false and not already_mounted,
-      })
-      callback(proj)
+  local function mount_with_tty()
+    vim.notify(
+      "Mounting SSHFS " .. host .. ":" .. remote_root .. " (password in the float)…",
+      vim.log.levels.INFO
+    )
+    if not MountPoint.get_or_create(mount_path) then
+      fail("Failed to create mount directory: " .. mount_path)
+      return
     end
+    mount_in_terminal(host, mount_path, remote_root, after_sshfs)
+  end
 
-    if MountPoint.is_active(mount_path) then
+  if MountPoint.is_active(mount_path) then
+    if mount_files_readable(mount_path) then
       remote_root = mounted_remote_path(mount_path) or remote_root
       vim.notify("Already mounted: " .. mount_path, vim.log.levels.INFO)
       finish(true)
       return
     end
+    vim.notify("Stale SSHFS mount (unreadable); remounting", vim.log.levels.WARN)
+    unmount_path(mount_path)
+  end
 
-    if not MountPoint.get_or_create(mount_path) then
-      local err = "Failed to create mount directory: " .. mount_path
-      vim.notify(err, vim.log.levels.ERROR)
-      callback(nil, err)
-      return
-    end
-
-    vim.notify(
-      "Mounting SSHFS " .. host .. ":" .. remote_root .. "…",
-      vim.log.levels.INFO
-    )
-
-    local settled = false
-    local function settle(ok, err)
-      if settled then
-        return
-      end
-      settled = true
-      if not ok then
-        vim.notify(
-          "SSHFS mount failed: " .. tostring(err),
-          vim.log.levels.ERROR
-        )
-        callback(nil, err)
-      end
-    end
-
-    vim.defer_fn(function()
-      if not settled then
-        settle(false, "SSHFS mount timed out")
-      end
-    end, defaults.remote.sshfs_ms)
-
-    mount_via_mux(host, mount_path, remote_root, function(ok, err)
-      if settled then
-        return
-      end
-
-      if not ok then
-        settle(false, err)
-        return
-      end
-
-      wait_until_mounted(
-        mount_path,
-        defaults.remote.mount_ready_ms,
-        function(mounted)
-          if settled then
-            return
-          end
-
-          if not mounted then
-            settle(false, "mount did not become visible")
-            return
-          end
-
-          settled = true
-          pcall(Lockfile.register, mount_path)
-          remote_root = mounted_remote_path(mount_path) or remote_root
-          finish(false)
-        end
-      )
-    end)
-  end)
+  mount_with_tty()
 end
 
 function M.disconnect()
@@ -659,6 +847,7 @@ function M.disconnect()
     mount_path = proj.mount_path,
   })
 
+  M.drop_control_master(proj.host)
   state.current = nil
 end
 
@@ -859,6 +1048,12 @@ function M.setup()
   vim.fn.mkdir(defaults.remote.mount_base, "p")
   vim.fn.mkdir(defaults.remote.sockets_dir, "p", "0700")
   require("config.remote_lsp").setup()
+
+  vim.opt.backupskip:append(defaults.remote.mount_base .. "/*")
+  vim.api.nvim_create_autocmd({ "BufNewFile", "BufReadPre" }, {
+    group = vim.api.nvim_create_augroup("RemoteFsLocalState", { clear = true }),
+    callback = keep_editor_state_local,
+  })
 
   vim.api.nvim_create_user_command("RemoteProject", function()
     M.pick_project()
