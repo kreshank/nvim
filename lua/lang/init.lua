@@ -99,6 +99,20 @@ function M.markers()
   return list
 end
 
+function M.markers_for(filetype)
+  if not filetype or filetype == "" then
+    return {}
+  end
+
+  local mod = by_ft[filetype]
+
+  if not mod then
+    return {}
+  end
+
+  return vim.deepcopy(mod.markers or {})
+end
+
 function M.servers()
   local seen = {}
   local list = {}

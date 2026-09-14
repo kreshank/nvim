@@ -87,6 +87,27 @@ function M.mise_which(root, tool)
   return path
 end
 
+---Parse a version from a mise install path such as
+---`~/.local/share/mise/installs/python/3.11.9/bin/python`.
+---@param path string?
+---@param tool string?
+---@return string?
+function M.mise_install_version(path, tool)
+  if not path or path == "" or not tool or tool == "" then
+    return nil
+  end
+
+  local ver = path:match(
+    "/installs/" .. vim.pesc(tool) .. "/([^/]+)/"
+  )
+
+  if ver and ver:match("%d") then
+    return ver
+  end
+
+  return nil
+end
+
 ---@param text string
 ---@return string?
 function M.cpp_std_from_text(text)

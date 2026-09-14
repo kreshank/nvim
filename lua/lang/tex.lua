@@ -16,6 +16,13 @@ return {
   mason_tools = { "latexindent" },
   remote = false,
   versioned = false,
+  markers = {
+    ".latexmkrc",
+    "latexmkrc",
+    ".texlabroot",
+    "texlabroot",
+    "Tectonic.toml",
+  },
   versions = { "latex" },
   default_version = "latex",
   detect = detect,

@@ -151,6 +151,55 @@ local c_markers = {
   "compile_flags.txt",
 }
 
+local function clangd_kind_from_ft(ft)
+  if ft == "c" or ft == "objc" then
+    return "c"
+  end
+
+  return "cpp"
+end
+
+---Pick C vs C++ from loaded buffers under root, not the current window.
+---Mixed or unknown workspaces default to C++ (one clangd client, one flag list).
+---@param root string?
+---@return string
+local function clangd_kind(root)
+  if not root or root == "" then
+    return "cpp"
+  end
+
+  root = vim.fs.normalize(root)
+  local prefix = root .. "/"
+  local saw_c = false
+  local saw_cpp = false
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr) then
+      local name = vim.api.nvim_buf_get_name(bufnr)
+
+      if name ~= "" then
+        name = vim.fs.normalize(name)
+
+        if name == root or vim.startswith(name, prefix) then
+          local ft = vim.bo[bufnr].filetype
+
+          if ft == "c" or ft == "objc" then
+            saw_c = true
+          elseif ft == "cpp" or ft == "objcpp" then
+            saw_cpp = true
+          end
+        end
+      end
+    end
+  end
+
+  if saw_c and not saw_cpp then
+    return "c"
+  end
+
+  return "cpp"
+end
+
 local clangd_lsp = {
   cmd = {
     "clangd",
@@ -160,10 +209,8 @@ local clangd_lsp = {
   },
   query_driver = true,
   before_init = function(params, config)
-    local bufnr = vim.api.nvim_get_current_buf()
-    local ft = vim.bo[bufnr].filetype
-    local kind = (ft == "c" or ft == "objc") and "c" or "cpp"
-    local resolved = require("lang").resolve(bufnr, {
+    local kind = clangd_kind(config.root_dir)
+    local resolved = require("lang").resolve(0, {
       root = config.root_dir,
       filetype = kind,
     })
@@ -186,6 +233,8 @@ local c = {
   query_drivers = query_drivers,
   detect = detect_kind("c", "c17"),
   apply = apply,
+  clangd_kind = clangd_kind,
+  clangd_kind_from_ft = clangd_kind_from_ft,
 }
 
 local cpp = {
@@ -209,6 +258,8 @@ local cpp = {
   query_drivers = query_drivers,
   detect = detect_kind("cpp", "c++20"),
   apply = apply,
+  clangd_kind = clangd_kind,
+  clangd_kind_from_ft = clangd_kind_from_ft,
   lsp = {
     clangd = clangd_lsp,
   },

@@ -176,7 +176,7 @@ local function remote_server_cmd(proj, server, bin)
   return proxy_cmd(proj, ssh)
 end
 
-local function local_syntax_config(server, root)
+local function local_syntax_config(server, root, bufnr)
   if server == "clangd" then
     return {
       cmd = {
@@ -188,7 +188,7 @@ local function local_syntax_config(server, root)
       },
       root_dir = root,
       init_options = {
-        fallbackFlags = project.cpp_fallback_flags(),
+        fallbackFlags = project.clangd_fallback_flags(bufnr, root),
       },
     }
   end
@@ -245,7 +245,7 @@ local function start_client(proj, mode, server, found, bufnr)
     config.cmd = remote_server_cmd(proj, server, bin)
     if server == "clangd" then
       config.init_options = {
-        fallbackFlags = project.cpp_fallback_flags(),
+        fallbackFlags = project.clangd_fallback_flags(bufnr, root),
       }
     elseif server == "ruff" then
       config.init_options = lsp.ruff_init_options()
@@ -263,7 +263,7 @@ local function start_client(proj, mode, server, found, bufnr)
     if not SYNTAX_SERVERS[server] then
       return
     end
-    config = vim.tbl_extend("force", config, local_syntax_config(server, root))
+    config = vim.tbl_extend("force", config, local_syntax_config(server, root, bufnr))
   else
     if server == "clangd" then
       config.cmd = {
@@ -274,7 +274,7 @@ local function start_client(proj, mode, server, found, bufnr)
         lsp.clangd_query_driver(),
       }
       config.init_options = {
-        fallbackFlags = project.cpp_fallback_flags(),
+        fallbackFlags = project.clangd_fallback_flags(bufnr, root),
       }
       config.before_init = function(params, cfg)
         local compile_commands_dir =

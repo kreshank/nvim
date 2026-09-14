@@ -125,6 +125,33 @@ local function version_from_pyvenv(venv_dir)
   return analysis_version(ver)
 end
 
+local function version_from_interpreter(bin)
+  if not bin or bin == "" then
+    return nil
+  end
+
+  local result = vim.system(
+    {
+      bin,
+      "-c",
+      "import sys; print('%d.%d' % (sys.version_info.major, sys.version_info.minor))",
+    },
+    { text = true, timeout = 1000 }
+  ):wait()
+
+  if result.code ~= 0 then
+    return nil
+  end
+
+  local ver = vim.trim(result.stdout or "")
+
+  if ver == "" then
+    return nil
+  end
+
+  return analysis_version(ver)
+end
+
 local function detect(root, _)
   local interpreter, venv_dir = venv_python(root)
 
@@ -152,8 +179,13 @@ local function detect(root, _)
   local mise_python = util.mise_which(root, "python")
 
   if mise_python then
+    local from_path = util.mise_install_version(mise_python, "python")
+    local version = (from_path and analysis_version(from_path))
+      or version_from_interpreter(mise_python)
+      or "3.12"
+
     return {
-      version = "3.12",
+      version = version,
       source = "mise",
       interpreter = mise_python,
     }

@@ -9,14 +9,27 @@ function M.launch_directory()
   return launch_directory
 end
 
-local function markers()
+local function markers_for_buf(bufnr)
   local list = vim.deepcopy(defaults.base_markers)
   local ok, lang = pcall(require, "lang")
 
-  if ok then
-    vim.list_extend(list, lang.markers())
+  if not ok then
+    return list
   end
 
+  local ft = ""
+
+  if bufnr then
+    local ft_ok, value = pcall(function()
+      return vim.bo[bufnr].filetype
+    end)
+
+    if ft_ok then
+      ft = value or ""
+    end
+  end
+
+  vim.list_extend(list, lang.markers_for(ft))
   return list
 end
 
@@ -42,7 +55,7 @@ function M.find_root(bufnr, max_depth)
     current = launch_directory
   end
 
-  local marker_list = markers()
+  local marker_list = markers_for_buf(bufnr)
 
   for _ = 0, max_depth do
     if mount_root and current == mount_root then
@@ -158,6 +171,39 @@ function M.cpp_fallback_flags()
     cpp.warnings
   )
 
+  return flags
+end
+
+---Fallback flags for clangd using lang.resolve (project std and :LangVersion).
+---@param bufnr integer?
+---@param root string?
+---@return string[]
+function M.clangd_fallback_flags(bufnr, root)
+  bufnr = bufnr or 0
+  local ft = ""
+
+  if type(bufnr) == "number" then
+    local ok, value = pcall(function()
+      return vim.bo[bufnr].filetype
+    end)
+
+    if ok then
+      ft = value or ""
+    end
+  end
+
+  local lang = require("lang")
+  local kind = lang.get("c").clangd_kind_from_ft(ft)
+  local resolved = lang.resolve(bufnr, {
+    root = root,
+    filetype = kind,
+  })
+  local mod = lang.get(resolved.lang or kind)
+  local flags = {
+    "-std=" .. (resolved.version or mod.default_version),
+  }
+
+  vim.list_extend(flags, mod.warnings)
   return flags
 end
 
