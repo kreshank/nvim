@@ -1,5 +1,5 @@
-local defaults = require("config.defaults")
-local remote = require("config.remote")
+local defaults = require("features.remote.defaults")
+local remote = require("features.remote")
 
 return {
   "uhs-robert/sshfs.nvim",
@@ -12,11 +12,11 @@ return {
   opts = {
     connections = {
       sshfs_options = remote.sshfs_options(),
-      control_persist = defaults.remote.control_persist,
-      socket_dir = defaults.remote.sockets_dir,
+      control_persist = defaults.control_persist,
+      socket_dir = defaults.sockets_dir,
     },
     mounts = {
-      base_dir = defaults.remote.mount_base,
+      base_dir = defaults.mount_base,
     },
     hooks = {
       on_exit = {

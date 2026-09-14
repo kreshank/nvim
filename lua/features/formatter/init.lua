@@ -1,5 +1,6 @@
-local defaults = require("config.defaults")
-local lsp = require("config.lsp")
+local defaults = require("features.formatter.defaults")
+local lsp = require("features.lsp")
+local lang = require("lang")
 
 local function get_formatters(bufnr)
   return vim.lsp.get_clients({
@@ -22,7 +23,7 @@ end
 
 local function select_formatter(bufnr)
   local filetype = vim.bo[bufnr].filetype
-  local preferred = defaults.format.clients[filetype]
+  local preferred = lang.formatter_for(filetype)
   local clients = get_formatters(bufnr)
 
   if #clients == 0 then
@@ -87,7 +88,7 @@ vim.api.nvim_create_user_command("Format", function()
     bufnr = bufnr,
     id = client.id,
     async = false,
-    timeout_ms = defaults.format.timeout_ms,
+    timeout_ms = defaults.timeout_ms,
   })
 
   if not ok then
@@ -113,7 +114,7 @@ end, {
 vim.api.nvim_create_user_command("FormatInfo", function()
   local bufnr = vim.api.nvim_get_current_buf()
   local filetype = vim.bo[bufnr].filetype
-  local preferred = defaults.format.clients[filetype]
+  local preferred = lang.formatter_for(filetype)
   local clients = get_formatters(bufnr)
 
   vim.notify(

@@ -1,29 +1,29 @@
-local defaults = require("config.defaults")
+local defaults = require("features.project.defaults")
 
 local M = {}
 
--- Capture the directory from which Neovim was launched.
--- This remains unchanged if :cd or :lcd is used later.
 local launch_directory =
   vim.fs.normalize(vim.fn.getcwd())
 
----Return the directory where Neovim was launched.
----@return string
 function M.launch_directory()
   return launch_directory
 end
 
----Search upward from a buffer for a project marker.
----
----If no marker is found within the configured number of parent directories,
----return the directory where Neovim was launched.
----@param bufnr integer
----@param max_depth? integer
----@return string
+local function markers()
+  local list = vim.deepcopy(defaults.base_markers)
+  local ok, lang = pcall(require, "lang")
+
+  if ok then
+    vim.list_extend(list, lang.markers())
+  end
+
+  return list
+end
+
 function M.find_root(bufnr, max_depth)
   max_depth =
     max_depth
-    or defaults.project.root_search_depth
+    or defaults.root_search_depth
 
   local filename =
     vim.api.nvim_buf_get_name(bufnr)
@@ -34,7 +34,7 @@ function M.find_root(bufnr, max_depth)
   if filename ~= "" then
     filename = vim.fs.normalize(filename)
     current = vim.fs.dirname(filename)
-    local ok, remote = pcall(require, "config.remote")
+    local ok, remote = pcall(require, "features.remote")
     if ok then
       mount_root = remote.mount_root_for_path(filename)
     end
@@ -42,12 +42,14 @@ function M.find_root(bufnr, max_depth)
     current = launch_directory
   end
 
+  local marker_list = markers()
+
   for _ = 0, max_depth do
     if mount_root and current == mount_root then
       return mount_root
     end
 
-    for _, marker in ipairs(defaults.project.markers) do
+    for _, marker in ipairs(marker_list) do
       local marker_path =
         vim.fs.joinpath(current, marker)
 
@@ -72,16 +74,6 @@ function M.find_root(bufnr, max_depth)
   return mount_root or launch_directory
 end
 
----Search downward for compile_commands.json.
----
----The supplied root is depth 0. Its subdirectories are searched through
----the configured maximum depth.
----
----Returns the directory containing compile_commands.json, rather than the
----path to the file itself.
----@param root string
----@param max_depth? integer
----@return string?
 function M.find_compile_commands(root, max_depth)
   if not root or root == "" then
     return nil
@@ -89,7 +81,7 @@ function M.find_compile_commands(root, max_depth)
 
   max_depth =
     max_depth
-    or defaults.project.compile_commands_search_depth
+    or defaults.compile_commands_search_depth
 
   root = vim.fs.normalize(root)
 
@@ -137,7 +129,7 @@ function M.find_compile_commands(root, max_depth)
 
           if
             entry_type == "directory"
-            and not defaults.project.ignored_directories[name]
+            and not defaults.ignored_directories[name]
           then
             queue[#queue + 1] = {
               path = vim.fs.joinpath(
@@ -155,21 +147,15 @@ function M.find_compile_commands(root, max_depth)
   return nil
 end
 
----Return the flags clangd should use when no compilation command applies.
----@return string[]
 function M.cpp_fallback_flags()
-  local standard =
-    vim.g.cpp_std
-    or defaults.cpp.standard
-
+  local cpp = require("lang").get("cpp")
   local flags = {
-    "-xc++",
-    "-std=" .. standard,
+    "-std=" .. cpp.default_version,
   }
 
   vim.list_extend(
     flags,
-    defaults.cpp.warnings
+    cpp.warnings
   )
 
   return flags

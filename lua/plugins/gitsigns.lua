@@ -30,7 +30,7 @@ return {
       auto_attach = true,
       attach_to_untracked = false,
       on_attach = function(bufnr)
-        local ok, remote = pcall(require, "config.remote")
+        local ok, remote = pcall(require, "features.remote")
         if ok then
           local path = vim.api.nvim_buf_get_name(bufnr)
           if remote.is_mount_path(path)

@@ -1,8 +1,8 @@
-local defaults = require("config.defaults")
+local defaults = require("features.remote.defaults")
 
 local M = {}
 
-local STATE_FILE = defaults.remote.recents_file
+local STATE_FILE = defaults.recents_file
 local setup_done = false
 
 ---@class RemoteProject
@@ -109,7 +109,7 @@ function M.remember(host, remote_root, fields)
   entry = vim.tbl_extend("force", entry or {
     host = host,
     remote_root = remote_root,
-    git_enabled = defaults.remote.git_default,
+    git_enabled = defaults.git_default,
   }, fields or {})
 
   entry.host = host
@@ -118,7 +118,7 @@ function M.remember(host, remote_root, fields)
 
   table.insert(state.recents, 1, entry)
 
-  while #state.recents > defaults.remote.recents_max do
+  while #state.recents > defaults.recents_max do
     table.remove(state.recents)
   end
 
@@ -133,7 +133,7 @@ end
 function M.mount_path_for(host, remote_root)
   local sanitized = remote_root:gsub("^/", ""):gsub("/$", ""):gsub("/", "_")
   local suffix = sanitized ~= "" and ("_" .. sanitized) or ""
-  return vim.fs.joinpath(defaults.remote.mount_base, host .. suffix)
+  return vim.fs.joinpath(defaults.mount_base, host .. suffix)
 end
 
 ---@param path string
@@ -152,7 +152,7 @@ function M.project_for_path(path)
     end
   end
 
-  local base = vim.fs.normalize(defaults.remote.mount_base)
+  local base = vim.fs.normalize(defaults.mount_base)
   if path ~= base and path:sub(1, #base + 1) ~= base .. "/" then
     return nil
   end
@@ -215,7 +215,7 @@ function M.sshfs_options(extra)
   return vim.tbl_extend(
     "force",
     {},
-    defaults.remote.sshfs_options,
+    defaults.sshfs_options,
     M.sshfs_identity(),
     extra or {}
   )
@@ -379,7 +379,7 @@ function M.ssh_run(host, remote_argv, timeout_ms, callback, opts)
 
   vim.system(cmd, {
     text = true,
-    timeout = timeout_ms or defaults.remote.ssh_cmd_ms,
+    timeout = timeout_ms or defaults.ssh_cmd_ms,
   }, function(obj)
     vim.schedule(function()
       local stdout = vim.trim(obj.stdout or "")
@@ -420,7 +420,7 @@ end
 ---@param host string
 ---@param callback fun(success: boolean, exit_code: number)
 local function open_auth_terminal(host, callback)
-  vim.fn.mkdir(defaults.remote.sockets_dir, "p", "0700")
+  vim.fn.mkdir(defaults.sockets_dir, "p", "0700")
 
   -- Real TTY password prompt. ControlPersist keeps the master after `exit`.
   -- Do not use ssh -N as a Neovim job: closing that window kills SSH.
@@ -447,7 +447,7 @@ local function ensure_ssh_auth(host, callback)
 
   -- Fast path: key already loaded, or an existing ControlMaster.
   -- BatchMode cannot prompt for a password; that is the next step.
-  M.ssh_run(host, { "true" }, defaults.remote.ssh_probe_ms, function(ok)
+  M.ssh_run(host, { "true" }, defaults.ssh_probe_ms, function(ok)
     if ok then
       callback(true)
       return
@@ -469,7 +469,7 @@ local function ensure_ssh_auth(host, callback)
         M.ssh_run(
           host,
           { "true" },
-          defaults.remote.ssh_probe_ms,
+          defaults.ssh_probe_ms,
           function(ready)
             if ready then
               callback(true)
@@ -664,7 +664,7 @@ local function mount_via_mux(host, mount_point, remote_suffix, callback)
 
   vim.system(cmd, {
     text = true,
-    timeout = defaults.remote.sshfs_ms,
+    timeout = defaults.sshfs_ms,
   }, function(obj)
     vim.schedule(function()
       if obj.code == 0 then
@@ -690,7 +690,7 @@ end
 ---@param remote_suffix string
 ---@param callback fun(ok: boolean, err?: string)
 local function mount_in_terminal(host, mount_point, remote_suffix, callback)
-  vim.fn.mkdir(defaults.remote.sockets_dir, "p", "0700")
+  vim.fn.mkdir(defaults.sockets_dir, "p", "0700")
 
   local spec = host .. ":" .. remote_suffix
   local cmd = {
@@ -763,7 +763,7 @@ function M.open_project(host, remote_path, opts, callback)
     })
     state.current = proj
     apply_tree_root(mount_path, host, remote_root)
-    require("config.remote_lsp").ensure(proj, {
+    require("features.remote.lsp").ensure(proj, {
       prompt = opts.prompt_lsp ~= false and not already_mounted,
     })
     callback(proj)
@@ -782,7 +782,7 @@ function M.open_project(host, remote_path, opts, callback)
 
     wait_for_readable_mount(
       mount_path,
-      defaults.remote.mount_ready_ms,
+      defaults.mount_ready_ms,
       function(readable, read_err)
         if not readable then
           unmount_path(mount_path)
@@ -832,7 +832,7 @@ function M.disconnect()
     return
   end
 
-  require("config.remote_lsp").stop_for_project(proj)
+  require("features.remote.lsp").stop_for_project(proj)
 
   local home = vim.fn.expand("~")
   pcall(vim.api.nvim_set_current_dir, home)
@@ -1045,11 +1045,11 @@ function M.setup()
   setup_done = true
 
   load_state()
-  vim.fn.mkdir(defaults.remote.mount_base, "p")
-  vim.fn.mkdir(defaults.remote.sockets_dir, "p", "0700")
-  require("config.remote_lsp").setup()
+  vim.fn.mkdir(defaults.mount_base, "p")
+  vim.fn.mkdir(defaults.sockets_dir, "p", "0700")
+  require("features.remote.lsp").setup()
 
-  vim.opt.backupskip:append(defaults.remote.mount_base .. "/*")
+  vim.opt.backupskip:append(defaults.mount_base .. "/*")
   vim.api.nvim_create_autocmd({ "BufNewFile", "BufReadPre" }, {
     group = vim.api.nvim_create_augroup("RemoteFsLocalState", { clear = true }),
     callback = keep_editor_state_local,
@@ -1073,28 +1073,28 @@ function M.setup()
       vim.notify("No remote project is connected", vim.log.levels.WARN)
       return
     end
-    require("config.remote_lsp").ensure(proj, { prompt = true, force = true })
+    require("features.remote.lsp").ensure(proj, { prompt = true, force = true })
   end, { desc = "Re-prompt remote / local / syntax LSP mode" })
 
   vim.api.nvim_create_user_command("RemoteGitToggle", function()
     M.toggle_git()
   end, { desc = "Toggle git integration on the remote mount" })
 
-  vim.keymap.set("n", "<leader>rp", M.pick_project, {
+  vim.keymap.set("n", defaults.keys.project, M.pick_project, {
     desc = "Remote project",
   })
-  vim.keymap.set("n", "<leader>rd", M.disconnect, {
+  vim.keymap.set("n", defaults.keys.disconnect, M.disconnect, {
     desc = "Remote disconnect",
   })
-  vim.keymap.set("n", "<leader>rs", M.open_shell, {
+  vim.keymap.set("n", defaults.keys.shell, M.open_shell, {
     desc = "Remote shell",
   })
-  vim.keymap.set("n", "<leader>rl", function()
+  vim.keymap.set("n", defaults.keys.lsp_mode, function()
     vim.cmd("RemoteLspMode")
   end, {
     desc = "Remote LSP mode",
   })
-  vim.keymap.set("n", "<leader>rg", M.toggle_git, {
+  vim.keymap.set("n", defaults.keys.git, M.toggle_git, {
     desc = "Remote git toggle",
   })
 end

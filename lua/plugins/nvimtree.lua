@@ -44,7 +44,7 @@ return {
         return
       end
       local path = node.absolute_path
-      if path and require("config.remote").is_mount_path(path) then
+      if path and require("features.remote").is_mount_path(path) then
         require("nvim-tree.actions.node.open-file").fn(mode, path)
         return
       end
@@ -146,7 +146,7 @@ return {
       enable = true,
       timeout = 400,
       disable_for_dirs = function(path)
-        return require("config.remote").should_disable_tree_git(path)
+        return require("features.remote").should_disable_tree_git(path)
       end,
     },
     filters = {
@@ -155,7 +155,7 @@ return {
     filesystem_watchers = {
       enable = true,
       ignore_dirs = function(path)
-        if require("config.remote").is_mount_path(path) then
+        if require("features.remote").is_mount_path(path) then
           return true
         end
         local name = vim.fn.fnamemodify(path, ":t")

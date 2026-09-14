@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/tmp/demo",
+    "command": "g++ -std=c++17 -c main.cpp",
+    "file": "main.cpp"
+  }
+]

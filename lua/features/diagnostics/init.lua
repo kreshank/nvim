@@ -1,3 +1,5 @@
+local defaults = require("features.diagnostics.defaults")
+
 local severity_names = {
   [vim.diagnostic.severity.ERROR] = "error",
   [vim.diagnostic.severity.WARN] = "warning",
@@ -112,16 +114,13 @@ end
 
 local function diagnostic_float_width()
   local window_width = vim.api.nvim_win_get_width(0)
-
-  local minimum_visible_code = 40
-  local preferred_max_width = 80
-  local minimum_float_width = 20
+  local float = defaults.float
 
   return math.max(
-    minimum_float_width,
+    float.minimum_float_width,
     math.min(
-      preferred_max_width,
-      window_width - minimum_visible_code
+      float.preferred_max_width,
+      window_width - float.minimum_visible_code
     )
   )
 end
@@ -129,7 +128,7 @@ end
 vim.diagnostic.config({
   virtual_text = {
     current_line = true,
-    spacing = 2,
+    spacing = defaults.virtual_text_spacing,
     source = false,
 
     format = function(diagnostic)
@@ -194,8 +193,10 @@ vim.api.nvim_create_autocmd({
   end,
 })
 
+local keys = defaults.keys
+
 -- Show all diagnostics on the current line in a numbered floating window.
-vim.keymap.set("n", "gl", function()
+vim.keymap.set("n", keys.line, function()
   vim.diagnostic.open_float({
     scope = "line",
     focusable = true,
@@ -219,7 +220,7 @@ end, {
 })
 
 -- Navigate all diagnostics.
-vim.keymap.set("n", "]d", function()
+vim.keymap.set("n", keys.next, function()
   vim.diagnostic.jump({
     count = 1,
     float = true,
@@ -228,7 +229,7 @@ end, {
   desc = "Next diagnostic",
 })
 
-vim.keymap.set("n", "[d", function()
+vim.keymap.set("n", keys.prev, function()
   vim.diagnostic.jump({
     count = -1,
     float = true,
@@ -238,7 +239,7 @@ end, {
 })
 
 -- Navigate errors only.
-vim.keymap.set("n", "]e", function()
+vim.keymap.set("n", keys.next_error, function()
   vim.diagnostic.jump({
     count = 1,
     severity = vim.diagnostic.severity.ERROR,
@@ -248,7 +249,7 @@ end, {
   desc = "Next error",
 })
 
-vim.keymap.set("n", "[e", function()
+vim.keymap.set("n", keys.prev_error, function()
   vim.diagnostic.jump({
     count = -1,
     severity = vim.diagnostic.severity.ERROR,
@@ -259,7 +260,7 @@ end, {
 })
 
 -- Open all diagnostics for the current buffer in the location list.
-vim.keymap.set("n", "<leader>dl", function()
+vim.keymap.set("n", keys.loclist, function()
   vim.diagnostic.setloclist({
     open = true,
     title = "Buffer diagnostics",

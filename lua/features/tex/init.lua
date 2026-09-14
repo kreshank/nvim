@@ -1,3 +1,5 @@
+local defaults = require("features.tex.defaults")
+
 local group = vim.api.nvim_create_augroup("TexPreview", {
   clear = true,
 })
@@ -23,7 +25,7 @@ local function schedule_tex_save(bufnr)
   local timer = vim.uv.new_timer()
   save_timers[bufnr] = timer
 
-  timer:start(1000, 0, vim.schedule_wrap(function()
+  timer:start(defaults.autosave_ms, 0, vim.schedule_wrap(function()
     if save_timers[bufnr] == timer then
       save_timers[bufnr] = nil
     end
@@ -78,11 +80,11 @@ vim.api.nvim_create_autocmd("BufUnload", {
   end,
 })
 
-vim.keymap.set("n", "<leader>lb", "<cmd>LspTexlabBuild<cr>", {
+vim.keymap.set("n", defaults.keys.build, "<cmd>LspTexlabBuild<cr>", {
   desc = "Build LaTeX (texlab)",
 })
 
-vim.keymap.set("n", "<leader>lv", function()
+vim.keymap.set("n", defaults.keys.view, function()
   local tex = vim.api.nvim_buf_get_name(0)
 
   if tex == "" then
@@ -97,21 +99,22 @@ vim.keymap.set("n", "<leader>lv", function()
     return
   end
 
-  if vim.fn.executable("zathura") == 0 then
+  if vim.fn.executable(defaults.viewer) == 0 then
     vim.notify(
-      "zathura not found; install with: sudo apt install zathura zathura-pdf-poppler",
+      defaults.viewer
+        .. " not found; install with: sudo apt install zathura zathura-pdf-poppler",
       vim.log.levels.ERROR
     )
     return
   end
 
-  vim.fn.jobstart({ "zathura", pdf }, {
+  vim.fn.jobstart({ defaults.viewer, pdf }, {
     detach = true,
   })
 end, {
   desc = "Open LaTeX PDF in Zathura",
 })
 
-vim.keymap.set("n", "<leader>lf", "<cmd>LspTexlabForward<cr>", {
+vim.keymap.set("n", defaults.keys.forward, "<cmd>LspTexlabForward<cr>", {
   desc = "Forward search to Zathura",
 })

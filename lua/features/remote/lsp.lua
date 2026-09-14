@@ -1,7 +1,9 @@
-local defaults = require("config.defaults")
-local project = require("config.project")
-local lsp = require("config.lsp")
-local remote = require("config.remote")
+local defaults = require("features.remote.defaults")
+local editor = require("config.defaults")
+local project = require("features.project")
+local lsp = require("features.lsp")
+local remote = require("features.remote")
+local python = require("lang").get("python")
 
 local M = {}
 
@@ -61,8 +63,9 @@ local function client_name(mode, server)
 end
 
 function M.stop_for_project(proj)
+  local servers = lsp.project_servers()
   local names = {}
-  for _, server in ipairs(lsp.project_servers) do
+  for _, server in ipairs(servers) do
     table.insert(names, "remote_" .. server)
     table.insert(names, "syntax_" .. server)
   end
@@ -75,7 +78,7 @@ function M.stop_for_project(proj)
       end
     end
     if client.config and client.config.root_dir == proj.mount_path then
-      if vim.tbl_contains(lsp.project_servers, lsp.logical_name(client.name)) then
+      if vim.tbl_contains(servers, lsp.logical_name(client.name)) then
         client.stop(true)
       end
     end
@@ -96,7 +99,7 @@ done
     "sh",
     "-c",
     script,
-  }, defaults.remote.ssh_cmd_ms, function(ok, stdout)
+  }, defaults.ssh_cmd_ms, function(ok, stdout)
     local found = {}
     if ok then
       for line in stdout:gmatch("[^\r\n]+") do
@@ -120,8 +123,8 @@ end
 
 local function proxy_cmd(proj, remote_cmd)
   local cmd = {
-    defaults.neovim.python_host,
-    defaults.remote.path_proxy,
+    editor.python_host,
+    defaults.path_proxy,
     "--local-root",
     proj.mount_path,
     "--remote-root",
@@ -197,7 +200,7 @@ local function local_syntax_config(server, root)
       settings = {
         python = {
           analysis = {
-            pythonVersion = defaults.python.analysis_version,
+            pythonVersion = python.analysis_version,
             typeCheckingMode = "off",
             diagnosticMode = "openFilesOnly",
             useLibraryCodeForTypes = false,
@@ -250,8 +253,8 @@ local function start_client(proj, mode, server, found, bufnr)
       config.settings = {
         python = {
           analysis = {
-            pythonVersion = defaults.python.analysis_version,
-            typeCheckingMode = defaults.python.type_checking_mode,
+            pythonVersion = python.analysis_version,
+            typeCheckingMode = python.type_checking_mode,
           },
         },
       }
@@ -291,8 +294,8 @@ local function start_client(proj, mode, server, found, bufnr)
       config.settings = {
         python = {
           analysis = {
-            pythonVersion = defaults.python.analysis_version,
-            typeCheckingMode = defaults.python.type_checking_mode,
+            pythonVersion = python.analysis_version,
+            typeCheckingMode = python.type_checking_mode,
           },
         },
       }

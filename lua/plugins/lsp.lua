@@ -1,54 +1,27 @@
-local lsp = require("config.lsp")
-
 return {
   {
     "williamboman/mason.nvim",
-    opts = {},
-    config = function(_, opts)
-      require("mason").setup(opts)
-
-      local registry = require("mason-registry")
-
-      registry.refresh(function()
-        local package = registry.get_package("latexindent")
-
-        if not package:is_installed() then
-          package:install()
-        end
-      end)
+    lazy = false,
+    config = function()
+      require("features.lsp").setup_mason()
     end,
   },
 
   {
-    "williamboman/mason-lspconfig.nvim",
-    dependencies = {
-      "williamboman/mason.nvim",
-    },
-
-    opts = {
-      automatic_enable = false,
-      ensure_installed = {
-        "clangd",
-        "jdtls",
-        "pyright",
-        "ruff",
-        "rust_analyzer",
-        "lua_ls",
-        "texlab",
-        "ltex_plus",
-      },
-    },
+    "neovim/nvim-lspconfig",
+    lazy = false,
   },
 
   {
-    "neovim/nvim-lspconfig",
+    "williamboman/mason-lspconfig.nvim",
+    lazy = false,
     dependencies = {
-      "williamboman/mason-lspconfig.nvim",
+      "williamboman/mason.nvim",
+      "neovim/nvim-lspconfig",
     },
 
     config = function()
-      lsp.configure()
-      lsp.enable_local()
+      require("features.lsp").setup()
     end,
   },
 }
