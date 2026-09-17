@@ -9,12 +9,11 @@ function M.launch_directory()
   return launch_directory
 end
 
-local function markers_for_buf(bufnr)
-  local list = vim.deepcopy(defaults.base_markers)
+local function lang_mod_for_buf(bufnr)
   local ok, lang = pcall(require, "lang")
 
   if not ok then
-    return list
+    return nil
   end
 
   local ft = ""
@@ -29,8 +28,18 @@ local function markers_for_buf(bufnr)
     end
   end
 
-  vim.list_extend(list, lang.markers_for(ft))
-  return list
+  return lang.for_filetype(ft)
+end
+
+local function markers_for_buf(bufnr)
+  local list = vim.deepcopy(defaults.base_markers)
+  local mod = lang_mod_for_buf(bufnr)
+
+  if mod then
+    vim.list_extend(list, mod.markers or {})
+  end
+
+  return list, mod
 end
 
 function M.find_root(bufnr, max_depth)
@@ -55,7 +64,7 @@ function M.find_root(bufnr, max_depth)
     current = launch_directory
   end
 
-  local marker_list = markers_for_buf(bufnr)
+  local marker_list, mod = markers_for_buf(bufnr)
 
   for _ = 0, max_depth do
     if mount_root and current == mount_root then
@@ -67,6 +76,21 @@ function M.find_root(bufnr, max_depth)
         vim.fs.joinpath(current, marker)
 
       if vim.uv.fs_stat(marker_path) then
+        return current
+      end
+    end
+
+    if mod then
+      if type(mod.resolve_root) == "function" then
+        local found = mod.resolve_root(current)
+
+        if found then
+          return found
+        end
+      elseif
+        type(mod.is_project_root) == "function"
+        and mod.is_project_root(current)
+      then
         return current
       end
     end
