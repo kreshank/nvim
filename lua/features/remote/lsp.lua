@@ -1,437 +1,156 @@
 local defaults = require("features.remote.defaults")
-local editor = require("config.defaults")
-local project = require("features.project")
-local lsp = require("features.lsp")
 local remote = require("features.remote")
-local python = require("lang").get("python")
-
+local lang = require("lang")
 local M = {}
 
-local FILETYPE_SERVERS = {
-  c = { "clangd" },
-  cpp = { "clangd" },
-  objc = { "clangd" },
-  objcpp = { "clangd" },
-  python = { "pyright", "ruff" },
-  java = { "jdtls" },
-  rust = { "rust_analyzer" },
-}
-
-local SYNTAX_SERVERS = {
-  clangd = true,
-  pyright = true,
-  ruff = true,
-}
-
-local PROBE_COMMANDS = {
-  clangd = { "clangd" },
-  pyright = { "pyright-langserver", "pyright" },
-  ruff = { "ruff" },
-  rust_analyzer = { "rust-analyzer", "rust_analyzer" },
-  jdtls = { "jdtls" },
-}
-
-local function no_watch_capabilities()
-  local caps = vim.lsp.protocol.make_client_capabilities()
-  caps.workspace = caps.workspace or {}
-  caps.workspace.didChangeWatchedFiles = {
-    dynamicRegistration = false,
-    relativePatternSupport = false,
-  }
-  return caps
+-- Commands and filetypes come from the same registry as local LSPs. A language
+-- may supply remote_lsp[server] when its remote command/settings need overrides.
+local function spec_for(server, mod)
+  local cfg = vim.deepcopy(vim.lsp.config[server] or {})
+  local spec = vim.tbl_deep_extend("force", {}, cfg, (mod.lsp or {})[server] or {})
+  return spec
 end
 
-local function disable_watchers(client)
-  if not client.server_capabilities then
-    return
-  end
-  client.server_capabilities.workspace =
-    client.server_capabilities.workspace or {}
-  client.server_capabilities.workspace.didChangeWatchedFiles = {
-    dynamicRegistration = false,
-  }
-end
-
-local function client_name(mode, server)
-  if mode == "remote" then
-    return "remote_" .. server
-  end
-  if mode == "syntax" then
-    return "syntax_" .. server
-  end
-  return server
+local function servers_for(bufnr)
+  local mod = lang.for_filetype(vim.bo[bufnr].filetype)
+  return mod and mod.servers or {}, mod
 end
 
 function M.stop_for_project(proj)
-  local servers = lsp.project_servers()
-  local names = {}
-  for _, server in ipairs(servers) do
-    table.insert(names, "remote_" .. server)
-    table.insert(names, "syntax_" .. server)
-  end
-
-  local get_clients = vim.lsp.get_clients
-  for _, client in ipairs(get_clients()) do
-    for _, name in ipairs(names) do
-      if client.name == name then
-        client.stop(true)
-      end
-    end
+  for _, client in ipairs(vim.lsp.get_clients()) do
     if client.config and client.config.root_dir == proj.mount_path then
-      if vim.tbl_contains(servers, lsp.logical_name(client.name)) then
-        client.stop(true)
-      end
+      client:stop(true)
     end
   end
 end
 
----@param host string
----@param callback fun(found: table<string, string>)
-function M.probe(host, callback)
-  local script = [[
-for c in clangd pyright-langserver pyright ruff rust-analyzer rust_analyzer jdtls; do
-  p=$(command -v "$c" 2>/dev/null) || continue
-  printf '%s=%s\n' "$c" "$p"
-done
-]]
-
-  remote.ssh_run(host, {
-    "sh",
-    "-c",
-    script,
-  }, defaults.ssh_cmd_ms, function(ok, stdout)
-    local found = {}
-    if ok then
-      for line in stdout:gmatch("[^\r\n]+") do
-        local cmd, path = line:match("^([^=]+)=(.+)$")
-        if cmd and path then
-          found[cmd] = path
-        end
-      end
-    end
-    callback(found)
-  end)
-end
-
-local function resolve_bin(found, server)
-  for _, name in ipairs(PROBE_COMMANDS[server] or { server }) do
-    if found[name] then
-      return found[name], name
+local function attach_project(proj)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf)
+      and remote.project_for_path(vim.api.nvim_buf_get_name(buf)) == proj then
+      M.attach_buffer(buf)
     end
   end
 end
 
-local function proxy_cmd(proj, remote_cmd)
-  local cmd = {
-    editor.python_host,
-    defaults.path_proxy,
-    "--local-root",
-    proj.mount_path,
-    "--remote-root",
-    proj.remote_root,
-    "--",
-  }
-  vim.list_extend(cmd, remote_cmd)
-  return cmd
-end
-
-local function remote_server_cmd(proj, server, bin)
-  local ssh = remote.ssh_argv(proj.host, nil, { batch = true })
-
-  if server == "clangd" then
-    vim.list_extend(ssh, {
-      bin,
-      "--background-index",
-      "--clang-tidy",
-      "--fallback-style=Google",
-      "--path-mappings="
-        .. proj.mount_path
-        .. "="
-        .. proj.remote_root,
-    })
-    return ssh
+local function start(proj, server, mod, bufnr, mode, binary)
+  local cfg = spec_for(server, mod)
+  local cmd = cfg.cmd
+  if type(cmd) ~= "table" or not cmd[1] then
+    vim.notify("Remote LSP needs an argv command for " .. server, vim.log.levels.WARN)
+    return
   end
-
-  if server == "pyright" then
-    vim.list_extend(ssh, { bin, "--stdio" })
-    return proxy_cmd(proj, ssh)
-  end
-
-  if server == "ruff" then
-    vim.list_extend(ssh, { bin, "server" })
-    return proxy_cmd(proj, ssh)
-  end
-
-  if server == "rust_analyzer" then
-    vim.list_extend(ssh, { bin })
-    return proxy_cmd(proj, ssh)
-  end
-
-  if server == "jdtls" then
-    vim.list_extend(ssh, { bin })
-    return proxy_cmd(proj, ssh)
-  end
-
-  vim.list_extend(ssh, { bin })
-  return proxy_cmd(proj, ssh)
-end
-
-local function local_syntax_config(server, root, bufnr)
-  if server == "clangd" then
-    return {
-      cmd = {
-        "clangd",
-        "--background-index=false",
-        "--clang-tidy=false",
-        "--fallback-style=Google",
-        lsp.clangd_query_driver(),
-      },
-      root_dir = root,
-      init_options = {
-        fallbackFlags = project.clangd_fallback_flags(bufnr, root),
-      },
-    }
-  end
-
-  if server == "pyright" then
-    return {
-      cmd = { "pyright-langserver", "--stdio" },
-      root_dir = root,
-      settings = {
-        python = {
-          analysis = {
-            pythonVersion = python.analysis_version,
-            typeCheckingMode = "off",
-            diagnosticMode = "openFilesOnly",
-            useLibraryCodeForTypes = false,
-          },
-        },
-      },
-    }
-  end
-
-  if server == "ruff" then
-    return {
-      cmd = { "ruff", "server" },
-      root_dir = root,
-      init_options = lsp.ruff_init_options(),
-    }
-  end
-end
-
-local function start_client(proj, mode, server, found, bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local name = client_name(mode, server)
-  local root = proj.mount_path
-
-  for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
-    if client.name == name then
-      return
-    end
-  end
-
-  local config = {
-    name = name,
-    root_dir = root,
-    capabilities = no_watch_capabilities(),
-    on_init = disable_watchers,
-  }
+  cfg.name = mode == "remote" and "remote_" .. server or server
+  cfg.root_dir = proj.mount_path
+  cfg.root_markers, cfg.query_driver = nil, nil
+  cfg.capabilities = cfg.capabilities or vim.lsp.protocol.make_client_capabilities()
+  cfg.capabilities.workspace = cfg.capabilities.workspace or {}
+  cfg.capabilities.workspace.didChangeWatchedFiles = { dynamicRegistration = false }
 
   if mode == "remote" then
-    local bin = select(1, resolve_bin(found, server))
-    if not bin then
-      return
+    -- Host callbacks/settings can contain local SDKs, runtimes and Python paths.
+    -- Keep upstream attach handlers (e.g. texlab commands), but let remote project
+    -- configuration win. Language-specific remote overrides stay in /lang.
+    cfg.before_init, cfg.on_init, cfg.cmd_env, cfg.cmd_cwd = nil, nil, nil, nil
+    cfg.settings, cfg.init_options = nil, nil
+    local override = (mod.remote_lsp or {})[server] or {}
+    cfg = vim.tbl_deep_extend("force", cfg, override)
+    cmd = vim.deepcopy(override.cmd or cmd)
+    cmd[1] = binary
+    local quoted = {}
+    for _, arg in ipairs(cmd) do
+      table.insert(quoted, vim.fn.shellescape(arg))
     end
-    config.cmd = remote_server_cmd(proj, server, bin)
-    if server == "clangd" then
-      config.init_options = {
-        fallbackFlags = project.clangd_fallback_flags(bufnr, root),
-      }
-    elseif server == "ruff" then
-      config.init_options = lsp.ruff_init_options()
-    elseif server == "pyright" then
-      config.settings = {
-        python = {
-          analysis = {
-            pythonVersion = python.analysis_version,
-            typeCheckingMode = python.type_checking_mode,
-          },
-        },
-      }
-    end
-  elseif mode == "syntax" then
-    if not SYNTAX_SERVERS[server] then
-      return
-    end
-    config = vim.tbl_extend("force", config, local_syntax_config(server, root, bufnr))
+    local command = "cd " .. vim.fn.shellescape(proj.remote_root)
+      .. " && exec " .. table.concat(quoted, " ")
+    local ssh = remote.ssh_argv(proj.host, { command })
+    cfg.cmd = {
+      require("config.defaults").python_host, defaults.path_proxy,
+      "--local-root", proj.mount_path, "--remote-root", proj.remote_root, "--",
+    }
+    vim.list_extend(cfg.cmd, ssh)
   else
-    if server == "clangd" then
-      config.cmd = {
-        "clangd",
-        "--background-index",
-        "--clang-tidy",
-        "--fallback-style=Google",
-        lsp.clangd_query_driver(),
-      }
-      config.init_options = {
-        fallbackFlags = project.clangd_fallback_flags(bufnr, root),
-      }
-      config.before_init = function(params, cfg)
-        local compile_commands_dir =
-          project.find_compile_commands(cfg.root_dir)
-        if compile_commands_dir then
-          params.initializationOptions =
-            params.initializationOptions or {}
-          params.initializationOptions.compilationDatabasePath =
-            compile_commands_dir
-        end
-      end
-    elseif server == "ruff" then
-      config.cmd = { "ruff", "server" }
-      config.init_options = lsp.ruff_init_options()
-    elseif server == "pyright" then
-      config.cmd = { "pyright-langserver", "--stdio" }
-      config.settings = {
-        python = {
-          analysis = {
-            pythonVersion = python.analysis_version,
-            typeCheckingMode = python.type_checking_mode,
-          },
-        },
-      }
-    elseif server == "rust_analyzer" then
-      config.cmd = { "rust-analyzer" }
-    elseif server == "jdtls" then
-      config.cmd = { "jdtls" }
+    cfg.cmd = vim.deepcopy(cmd)
+    cfg.cmd[1] = require("features.lsp").mason_exe(cmd[1])
+    if vim.fn.executable(cfg.cmd[1]) ~= 1 then
+      vim.notify("Local server unavailable: " .. cmd[1], vim.log.levels.WARN)
+      return
     end
   end
-
-  vim.lsp.start(config, { bufnr = bufnr })
+  vim.lsp.start(cfg, { bufnr = bufnr })
 end
 
-local function servers_for_buf(bufnr)
-  local ft = vim.bo[bufnr].filetype
-  return FILETYPE_SERVERS[ft] or {}
+local function probe(proj, server, mod, callback)
+  local cfg = spec_for(server, mod)
+  local cmd = ((mod.remote_lsp or {})[server] or {}).cmd or cfg.cmd
+  if type(cmd) ~= "table" or not cmd[1] then
+    callback(nil)
+    return
+  end
+  local executable = vim.fs.basename(cmd[1])
+  -- OpenSSH joins remote arguments with spaces: send one quoted shell command.
+  -- The same login environment is used for discovery and server startup.
+  remote.ssh_run(proj.host, {
+    "cd " .. vim.fn.shellescape(proj.remote_root)
+      .. " && command -v " .. vim.fn.shellescape(executable),
+  }, defaults.ssh_probe_ms, function(ok, stdout)
+    local path = ok and stdout:match("(/[^\r\n]+)%s*$") or nil
+    callback(path)
+  end)
 end
 
 function M.attach_buffer(bufnr)
-  if not vim.api.nvim_buf_is_valid(bufnr) then
+  if not vim.api.nvim_buf_is_loaded(bufnr) or vim.bo[bufnr].buftype ~= "" then
     return
   end
-  if vim.bo[bufnr].buftype ~= "" then
-    return
-  end
-
-  local name = vim.api.nvim_buf_get_name(bufnr)
-  local proj = remote.project_for_path(name)
-  if not proj or not proj.lsp_mode then
-    return
-  end
-
-  local found = proj._probe_found or {}
-  for _, server in ipairs(servers_for_buf(bufnr)) do
-    start_client(proj, proj.lsp_mode, server, found, bufnr)
-  end
-end
-
-local function apply_mode(proj, mode, found)
-  proj.lsp_mode = mode
-  proj.probe_ok = next(found) ~= nil
-  proj._probe_found = found
-
-  remote.remember(proj.host, proj.remote_root, {
-    mount_path = proj.mount_path,
-    lsp_mode = mode,
-    probe_ok = proj.probe_ok,
-    git_enabled = proj.git_enabled,
-  })
-
-  M.stop_for_project(proj)
-
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if remote.project_for_path(vim.api.nvim_buf_get_name(bufnr)) then
-      M.attach_buffer(bufnr)
-    end
-  end
-
-  vim.notify(
-    "Remote LSP mode: " .. mode,
-    vim.log.levels.INFO
-  )
-end
-
-local function prompt_mode(proj, found, callback)
-  local available = {}
-  for server, _ in pairs(PROBE_COMMANDS) do
-    if resolve_bin(found, server) then
-      table.insert(available, server)
-    end
-  end
-  table.sort(available)
-
-  local options = {}
-  if #available > 0 then
-    table.insert(options, {
-      id = "remote",
-      label = "Remote LSP (" .. table.concat(available, ", ") .. ")",
-    })
-  end
-
-  table.insert(options, {
-    id = "local",
-    label = "Local LSP (Mason; toolchain/paths may be wrong)",
-  })
-  table.insert(options, {
-    id = "syntax",
-    label = "Syntax / stdlib only (no project packages)",
-  })
-
-  vim.ui.select(options, {
-    prompt = "LSP for " .. proj.host .. ":" .. proj.remote_root,
-    format_item = function(item)
-      return item.label
-    end,
-  }, function(choice)
-    if not choice then
-      callback(nil)
-      return
-    end
-    callback(choice.id)
-  end)
-end
-
----@param proj table
----@param opts? { prompt?: boolean, force?: boolean }
-function M.ensure(proj, opts)
-  opts = opts or {}
-
-  M.probe(proj.host, function(found)
-    local probe_ok = next(found) ~= nil
-    local should_prompt = opts.force
-      or opts.prompt
-      or not proj.lsp_mode
-      or (proj.lsp_mode == "remote" and not probe_ok)
-
-    if should_prompt then
-      prompt_mode(proj, found, function(mode)
-        if not mode then
+  local proj = remote.project_for_path(vim.api.nvim_buf_get_name(bufnr))
+  if not proj or not proj._lsp_ready then return end
+  local servers, mod = servers_for(bufnr)
+  proj._servers = proj._servers or {}
+  for _, server in ipairs(servers) do
+    local entry = proj._servers[server]
+    if entry then
+      if entry.mode == "remote" or entry.mode == "local" then
+        start(proj, server, mod, bufnr, entry.mode, entry.binary)
+      end
+    else
+      proj._servers[server] = { mode = "pending" }
+      local generation = proj._servers
+      probe(proj, server, mod, function(binary)
+        if not proj._lsp_ready or proj._servers ~= generation then return end
+        if binary then
+          proj._servers[server] = { mode = "remote", binary = binary }
+          attach_project(proj)
           return
         end
-        apply_mode(proj, mode, found)
+        vim.ui.select({ "Use local " .. server, "Skip " .. server }, {
+          prompt = server .. " unavailable over SSH on " .. proj.host
+            .. "; local fallback may lack remote libraries",
+        }, function(_, index)
+          if not proj._lsp_ready or proj._servers ~= generation then return end
+          proj._servers[server] = { mode = index == 1 and "local" or "skip" }
+          attach_project(proj)
+        end)
       end)
-      return
     end
+  end
+end
 
-    apply_mode(proj, proj.lsp_mode, found)
-  end)
+function M.ensure(proj, opts)
+  opts = opts or {}
+  if opts.force then
+    M.stop_for_project(proj)
+    proj._servers = {}
+  end
+  proj._lsp_ready = true
+  proj.lsp_mode = "auto"
+  attach_project(proj)
 end
 
 function M.setup()
-  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile", "FileType" }, {
+  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile", "FileType", "BufEnter" }, {
     group = vim.api.nvim_create_augroup("RemoteLsp", { clear = true }),
-    callback = function(ev)
-      M.attach_buffer(ev.buf)
-    end,
+    callback = function(ev) M.attach_buffer(ev.buf) end,
   })
 end
 

@@ -1,3 +1,5 @@
 lazy-lock.json
 .nvimlog
 scripts/__pycache__
+
+lua/features/markdown/browser/node_modules/

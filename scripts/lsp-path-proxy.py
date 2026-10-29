@@ -24,8 +24,11 @@ def _norm(path: str) -> str:
 
 
 def _rewrite_path(path: str, src: str, dst: str) -> str:
-    if path == src or path.startswith(src + "/"):
-        return dst + path[len(src) :]
+    if path == src:
+        return dst
+    prefix = src.rstrip("/") + "/"
+    if path.startswith(prefix):
+        return dst.rstrip("/") + "/" + path[len(prefix) :]
     return path
 
 
@@ -64,7 +67,8 @@ def rewrite_value(value, src: str, dst: str):
         return [rewrite_value(item, src, dst) for item in value]
     if isinstance(value, dict):
         return {
-            key: rewrite_value(item, src, dst) for key, item in value.items()
+            rewrite_value(key, src, dst): rewrite_value(item, src, dst)
+            for key, item in value.items()
         }
     return value
 
@@ -111,6 +115,7 @@ def pump(src, dst, src_root: str, dst_root: str) -> None:
     while True:
         message = read_message(src)
         if message is None:
+            dst.close()
             break
         write_message(dst, rewrite_value(message, src_root, dst_root))
 

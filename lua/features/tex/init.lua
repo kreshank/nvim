@@ -13,6 +13,8 @@ local function schedule_tex_save(bufnr)
     return
   end
 
+  if vim.b[bufnr].tex_autosave == false then return end
+
   if not vim.bo[bufnr].modifiable or not vim.bo[bufnr].modified then
     return
   end
@@ -38,7 +40,7 @@ local function schedule_tex_save(bufnr)
       return
     end
 
-    if vim.bo[bufnr].modifiable and vim.bo[bufnr].modified then
+    if vim.b[bufnr].tex_autosave ~= false and vim.bo[bufnr].modifiable and vim.bo[bufnr].modified then
       vim.api.nvim_buf_call(bufnr, function()
         vim.cmd("silent! update")
       end)
@@ -80,41 +82,34 @@ vim.api.nvim_create_autocmd("BufUnload", {
   end,
 })
 
-vim.keymap.set("n", defaults.keys.build, "<cmd>LspTexlabBuild<cr>", {
-  desc = "Build LaTeX (texlab)",
-})
-
-vim.keymap.set("n", defaults.keys.view, function()
-  local tex = vim.api.nvim_buf_get_name(0)
-
-  if tex == "" then
-    vim.notify("No file name", vim.log.levels.WARN)
-    return
-  end
-
-  local pdf = tex:gsub("%.tex$", ".pdf")
-
-  if vim.fn.filereadable(pdf) == 0 then
-    vim.notify("PDF not found: " .. pdf, vim.log.levels.WARN)
-    return
-  end
-
-  if vim.fn.executable(defaults.viewer) == 0 then
-    vim.notify(
-      defaults.viewer
-        .. " not found; install with: sudo apt install zathura zathura-pdf-poppler",
-      vim.log.levels.ERROR
-    )
-    return
-  end
-
-  vim.fn.jobstart({ defaults.viewer, pdf }, {
-    detach = true,
-  })
-end, {
-  desc = "Open LaTeX PDF in Zathura",
-})
-
-vim.keymap.set("n", defaults.keys.forward, "<cmd>LspTexlabForward<cr>", {
-  desc = "Forward search to Zathura",
+-- Buffer-local controls; texlab resolves included files and build directories.
+vim.api.nvim_create_autocmd("FileType", {
+  group = group,
+  pattern = { "tex", "plaintex", "bib" },
+  callback = function(ev)
+    local function map(key, action, desc)
+      vim.keymap.set("n", key, action, { buffer = ev.buf, desc = desc })
+    end
+    local function command(name, save)
+      return function()
+        if vim.fn.exists(":" .. name) ~= 2 then
+          vim.notify("texlab is not attached to this buffer", vim.log.levels.WARN)
+          return
+        end
+        if save then vim.cmd.update() end
+        vim.cmd(name)
+      end
+    end
+    map(defaults.keys.build, command("LspTexlabBuild", true), "Build LaTeX")
+    map(defaults.keys.forward, command("LspTexlabForward"), "SyncTeX to PDF")
+    map(defaults.keys.view, command("LspTexlabForward"), "Open project PDF at cursor")
+    map(defaults.keys.cancel, command("LspTexlabCancelBuild"), "Cancel LaTeX build")
+    map(defaults.keys.errors, function()
+      vim.diagnostic.setloclist({ open = true })
+    end, "LaTeX diagnostics")
+    map(defaults.keys.autosave, function()
+      vim.b[ev.buf].tex_autosave = vim.b[ev.buf].tex_autosave == false
+      vim.notify("TeX autosave " .. (vim.b[ev.buf].tex_autosave and "on" or "off"))
+    end, "Toggle TeX autosave")
+  end,
 })

@@ -180,7 +180,7 @@ Mason installs `ltex-ls-plus` (bundled Java). No separate apt package required b
 
 ---
 
-## [`lua/config/tex.lua`](lua/config/tex.lua) — preview / autosave
+## `lua/features/tex` — preview / autosave
 
 | Need | Why |
 |------|-----|
@@ -242,9 +242,24 @@ No required system packages. A Nerd Font in the terminal improves icons.
 
 ---
 
-## [`lua/plugins/render-markdown.lua`](lua/plugins/render-markdown.lua)
+## `lua/plugins/markdown.lua`
 
-No required system packages.
+The local browser preview under `lua/features/markdown/browser` requires Node.js 22.12+
+and npm, plus a browser opener supported by `vim.ui.open` (`xdg-open` on Linux,
+`wslview` on WSL). Its first launch runs `npm ci --omit=dev`; dependencies are
+pinned in package-lock.json. To install/rebuild manually:
+
+```sh
+npm ci --omit=dev --prefix ~/.config/nvim/lua/features/markdown/browser
+```
+
+The preview renders locally with no CDN dependencies. See `README.md` for link
+navigation, delimiter support, and the optional browser integration tests.
+
+`render-latex.nvim` downloads a prebuilt worker on first load. Run
+`:RenderLatex doctor` / `:RenderLatex install` for diagnostics/retry. Alacritty
+uses the browser for images and display math; Kitty can render equations inline
+with tmux `allow-passthrough on`. See `README.md` for mappings and limitations.
 
 ---
 

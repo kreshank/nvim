@@ -14,6 +14,9 @@ return {
     .. "/scripts/lsp-path-proxy.py",
   keys = {
     project = "<leader>rp",
+    direct = "<leader>rt",
+    config = "<leader>rc",
+    add_host = "<leader>rn",
     disconnect = "<leader>rd",
     shell = "<leader>rs",
     lsp_mode = "<leader>rl",

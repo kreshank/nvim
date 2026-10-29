@@ -2,6 +2,9 @@
 vim.opt.number = true
 vim.opt.relativenumber = true
 
+-- Keep Git markers visible alongside diagnostic signs.
+vim.opt.signcolumn = "yes:1"
+
 -- Disable bells
 vim.opt.errorbells = false
 vim.opt.visualbell = false

@@ -17,6 +17,7 @@ local setup_done = false
 local state = {
   ---@type RemoteProject[]
   recents = {},
+  active = {},
   ---@type RemoteProject|nil
   current = nil,
 }
@@ -85,7 +86,14 @@ local function save_state()
     return
   end
 
-  file:write(vim.json.encode({ recents = state.recents }))
+  local recents = {}
+  for _, entry in ipairs(state.recents) do
+    table.insert(recents, {
+      host = entry.host, remote_root = entry.remote_root, mount_path = entry.mount_path,
+      git_enabled = entry.git_enabled, last_used = entry.last_used,
+    })
+  end
+  file:write(vim.json.encode({ recents = recents }))
   file:close()
 end
 
@@ -106,11 +114,8 @@ function M.remember(host, remote_root, fields)
     end
   end
 
-  entry = vim.tbl_extend("force", entry or {
-    host = host,
-    remote_root = remote_root,
-    git_enabled = defaults.git_default,
-  }, fields or {})
+  entry = entry or { host = host, remote_root = remote_root, git_enabled = defaults.git_default }
+  for field, value in pairs(fields or {}) do entry[field] = value end
 
   entry.host = host
   entry.remote_root = remote_root
@@ -127,13 +132,19 @@ function M.remember(host, remote_root, fields)
 end
 
 function M.current()
-  return state.current
+  return M.project_for_path(vim.api.nvim_buf_get_name(0))
+    or M.project_for_path(vim.fn.getcwd()) or state.current
 end
 
 function M.mount_path_for(host, remote_root)
-  local sanitized = remote_root:gsub("^/", ""):gsub("/$", ""):gsub("/", "_")
-  local suffix = sanitized ~= "" and ("_" .. sanitized) or ""
-  return vim.fs.joinpath(defaults.mount_base, host .. suffix)
+  for _, entry in ipairs(state.recents) do
+    if entry.host == host and entry.remote_root == remote_root and entry.mount_path then
+      return entry.mount_path
+    end
+  end
+  local label = host:gsub("[^%w._-]", "_")
+  return vim.fs.joinpath(defaults.mount_base,
+    label .. "_" .. vim.fn.sha256(M.project_key(host, remote_root)):sub(1, 16))
 end
 
 ---@param path string
@@ -144,6 +155,14 @@ function M.project_for_path(path)
   end
 
   path = vim.fs.normalize(path)
+
+  local best
+  for _, entry in pairs(state.active) do
+    local mount = entry.mount_path
+    if (path == mount or path:sub(1, #mount + 1) == mount .. "/")
+      and (not best or #mount > #best.mount_path) then best = entry end
+  end
+  if best then return best end
 
   if state.current and state.current.mount_path then
     local mount = vim.fs.normalize(state.current.mount_path)
@@ -266,9 +285,7 @@ function M.ssh_client_options(opts)
     "ConnectTimeout=" .. tostring(opts.connect_timeout or 15)
   )
 
-  if opts.batch then
-    table.insert(options, "BatchMode=yes")
-  end
+  table.insert(options, opts.batch and "BatchMode=yes" or "BatchMode=no")
 
   return options
 end
@@ -300,72 +317,6 @@ function M.drop_control_master(host)
   if ok then
     Ssh.cleanup_control_master(host)
   end
-end
-
----@param host string
----@return string[]
-function M.mux_check_argv(host)
-  local cmd = { "ssh" }
-  for _, opt in ipairs(M.ssh_client_options({ batch = true })) do
-    if opt:match("^ControlPath=") then
-      table.insert(cmd, "-o")
-      table.insert(cmd, opt)
-    end
-  end
-  table.insert(cmd, "-O")
-  table.insert(cmd, "check")
-  table.insert(cmd, host)
-  return cmd
-end
-
----@param host string
----@param timeout_ms integer
----@param callback fun(ok: boolean)
-local function wait_until_mux(host, timeout_ms, callback)
-  local started = vim.uv.now()
-  local timer = vim.uv.new_timer()
-  if not timer then
-    callback(false)
-    return
-  end
-
-  local settled = false
-  local in_flight = false
-
-  local function finish(ok)
-    if settled then
-      return
-    end
-    settled = true
-    timer:stop()
-    timer:close()
-    callback(ok)
-  end
-
-  timer:start(0, 150, function()
-    if settled or in_flight then
-      return
-    end
-    in_flight = true
-    vim.system(M.mux_check_argv(host), {
-      text = true,
-      timeout = 2000,
-    }, function(obj)
-      vim.schedule(function()
-        in_flight = false
-        if settled then
-          return
-        end
-        if obj.code == 0 then
-          finish(true)
-          return
-        end
-        if vim.uv.now() - started > timeout_ms then
-          finish(false)
-        end
-      end)
-    end)
-  end)
 end
 
 ---@param host string
@@ -403,20 +354,6 @@ function M.ssh_run(host, remote_argv, timeout_ms, callback, opts)
   end)
 end
 
-local function restore_term(previous)
-  if previous then
-    vim.env.TERM = previous
-  end
-end
-
-local function with_tmux_term(callback)
-  local previous = vim.env.TERM
-  if vim.env.TMUX or (previous and previous:match("^screen")) then
-    vim.env.TERM = "xterm-256color"
-  end
-  callback(previous)
-end
-
 ---@param host string
 ---@param callback fun(success: boolean, exit_code: number)
 local function open_auth_terminal(host, callback)
@@ -436,13 +373,12 @@ local function open_auth_terminal(host, callback)
   table.insert(cmd, host)
   table.insert(cmd, "exit")
 
-  local Terminal = require("sshfs.ui.terminal")
-  Terminal.open_auth_floating(cmd, host, callback)
+  require("features.remote.ssh").auth_terminal(cmd, host, callback)
 end
 
 ---@param host string
 ---@param callback fun(ok: boolean, err?: string)
-local function ensure_ssh_auth(host, callback)
+function M.authenticate(host, callback)
   vim.notify("Checking SSH to " .. host .. "…", vim.log.levels.INFO)
 
   -- Fast path: key already loaded, or an existing ControlMaster.
@@ -458,31 +394,28 @@ local function ensure_ssh_auth(host, callback)
       vim.log.levels.INFO
     )
 
-    with_tmux_term(function(previous)
-      open_auth_terminal(host, function(success)
-        restore_term(previous)
-        if not success then
-          callback(false, "SSH authentication failed for " .. host)
-          return
-        end
+    open_auth_terminal(host, function(success)
+      if not success then
+        callback(false, "SSH authentication failed for " .. host)
+        return
+      end
 
-        M.ssh_run(
-          host,
-          { "true" },
-          defaults.ssh_probe_ms,
-          function(ready)
-            if ready then
-              callback(true)
-              return
-            end
-            callback(
-              false,
-              "SSH login succeeded but the shared connection is not ready"
-            )
-          end,
-          { drop_mux_on_timeout = false }
-        )
-      end)
+      M.ssh_run(
+        host,
+        { "true" },
+        defaults.ssh_probe_ms,
+        function(ready)
+          if ready then
+            callback(true)
+            return
+          end
+          callback(
+            false,
+            "SSH login succeeded but the shared connection is not ready"
+          )
+        end,
+        { drop_mux_on_timeout = false }
+      )
     end)
   end)
 end
@@ -523,7 +456,7 @@ local function mounted_remote_path(mount_path)
     if conn.mount_path == mount_path then
       local path = conn.remote_path
       if type(path) == "string" and path:match("^/") then
-        return path:gsub("/+$", "")
+        return normalize_abs(path)
       end
     end
   end
@@ -590,7 +523,7 @@ local function sshfs_dash_o(extra)
     if value == true then
       table.insert(options, key)
     elseif value ~= false and value ~= nil then
-      table.insert(options, string.format("%s=%s", key, tostring(value)))
+      table.insert(options, string.format("%s=%s", key, tostring(value):gsub("[\\,]", "\\%0")))
     end
   end
   return options
@@ -642,47 +575,6 @@ local function unmount_path(mount_path)
   end
 end
 
----@param host string
----@param mount_point string
----@param remote_suffix string
----@param callback fun(ok: boolean, err?: string)
-local function mount_via_mux(host, mount_point, remote_suffix, callback)
-  local Ssh = require("sshfs.lib.ssh")
-  local spec = host .. ":" .. remote_suffix
-  local cmd = {
-    "sshfs",
-    spec,
-    mount_point,
-    "-o",
-    table.concat(
-      sshfs_dash_o({
-        ssh_command = Ssh.build_command_string("socket"),
-      }),
-      ","
-    ),
-  }
-
-  vim.system(cmd, {
-    text = true,
-    timeout = defaults.sshfs_ms,
-  }, function(obj)
-    vim.schedule(function()
-      if obj.code == 0 then
-        callback(true)
-        return
-      end
-
-      local err = vim.trim(obj.stderr or obj.stdout or "")
-      if obj.signal then
-        err = err ~= "" and err or "sshfs timed out"
-      elseif err == "" then
-        err = "sshfs failed"
-      end
-      callback(false, err)
-    end)
-  end)
-end
-
 ---SSHFS keeps its own ssh child. A ControlMaster owned by the Neovim
 ---password window dies when that window closes, which makes every open fail.
 ---@param host string
@@ -692,6 +584,12 @@ end
 local function mount_in_terminal(host, mount_point, remote_suffix, callback)
   vim.fn.mkdir(defaults.sockets_dir, "p", "0700")
 
+  local ssh = { "ssh", "-o", "ControlMaster=no", "-o", "ControlPath=none" }
+  for _, option in ipairs(M.ssh_client_options({ batch = false })) do
+    if not option:match("^Control") then vim.list_extend(ssh, { "-o", option }) end
+  end
+  local quoted = {}
+  for _, arg in ipairs(ssh) do table.insert(quoted, vim.fn.shellescape(arg)) end
   local spec = host .. ":" .. remote_suffix
   local cmd = {
     "sshfs",
@@ -702,22 +600,18 @@ local function mount_in_terminal(host, mount_point, remote_suffix, callback)
       sshfs_dash_o({
         -- Independent of Neovim's ControlMaster. Sharing that socket is
         -- what made tree listings work while every :edit failed.
-        ssh_command = "ssh -o ControlMaster=no -o ControlPath=none",
+        ssh_command = table.concat(quoted, " "),
       }),
       ","
     ),
   }
 
-  with_tmux_term(function(previous)
-    local Terminal = require("sshfs.ui.terminal")
-    Terminal.open_auth_floating(cmd, host, function(success)
-      restore_term(previous)
-      if not success then
-        callback(false, "SSHFS authentication failed for " .. host)
-        return
-      end
-      callback(true)
-    end)
+  require("features.remote.ssh").auth_terminal(cmd, host, function(success)
+    if not success then
+      callback(false, "SSHFS authentication failed for " .. host)
+      return
+    end
+    callback(true)
   end)
 end
 
@@ -751,21 +645,45 @@ end
 function M.open_project(host, remote_path, opts, callback)
   opts = opts or {}
   callback = callback or function() end
+  if vim.fn.executable("sshfs") ~= 1 then
+    local err = "sshfs is not installed locally. Install sshfs and fuse3; RemoteSSH works without them."
+    vim.notify(err, vim.log.levels.ERROR)
+    callback(nil, err)
+    return
+  end
 
   local remote_root = to_sshfs_suffix(remote_path)
   local mount_path = M.mount_path_for(host, remote_root)
   local MountPoint = require("sshfs.lib.mount_point")
   local Lockfile = require("sshfs.lib.lockfile")
 
-  local function finish(already_mounted)
+  local function finish()
     local proj = M.remember(host, remote_root, {
       mount_path = mount_path,
     })
     state.current = proj
+    state.active[mount_path] = proj
     apply_tree_root(mount_path, host, remote_root)
-    require("features.remote.lsp").ensure(proj, {
-      prompt = opts.prompt_lsp ~= false and not already_mounted,
-    })
+    M.authenticate(host, function(ok, err)
+      if not ok then
+        vim.notify(err, vim.log.levels.WARN)
+        return
+      end
+      if remote_root:sub(1, 1) ~= "/" then
+        M.ssh_run(host, { "cd " .. vim.fn.shellescape(remote_root) .. " && pwd -P" },
+          defaults.ssh_cmd_ms, function(resolved, stdout)
+            if resolved and stdout:sub(1, 1) == "/" then
+              proj.remote_root = stdout
+              save_state()
+              require("features.remote.lsp").ensure(proj)
+            else
+              vim.notify("Cannot resolve remote root for LSP", vim.log.levels.WARN)
+            end
+          end)
+      else
+        require("features.remote.lsp").ensure(proj)
+      end
+    end)
     callback(proj)
   end
 
@@ -791,7 +709,7 @@ function M.open_project(host, remote_path, opts, callback)
         end
         pcall(Lockfile.register, mount_path)
         remote_root = mounted_remote_path(mount_path) or remote_root
-        finish(false)
+        finish()
       end
     )
   end
@@ -812,7 +730,7 @@ function M.open_project(host, remote_path, opts, callback)
     if mount_files_readable(mount_path) then
       remote_root = mounted_remote_path(mount_path) or remote_root
       vim.notify("Already mounted: " .. mount_path, vim.log.levels.INFO)
-      finish(true)
+      finish()
       return
     end
     vim.notify("Stale SSHFS mount (unreadable); remounting", vim.log.levels.WARN)
@@ -823,7 +741,7 @@ function M.open_project(host, remote_path, opts, callback)
 end
 
 function M.disconnect()
-  local proj = state.current
+  local proj = M.current()
   if not proj then
     local ok, sshfs = pcall(require, "sshfs")
     if ok then
@@ -831,8 +749,6 @@ function M.disconnect()
     end
     return
   end
-
-  require("features.remote.lsp").stop_for_project(proj)
 
   local home = vim.fn.expand("~")
   pcall(vim.api.nvim_set_current_dir, home)
@@ -842,46 +758,57 @@ function M.disconnect()
   end
 
   local Session = require("sshfs.session")
-  Session.disconnect_from({
+  local disconnected = Session.disconnect_from({
     host = proj.host,
     mount_path = proj.mount_path,
   })
 
-  M.drop_control_master(proj.host)
-  state.current = nil
+  if not disconnected then return end
+
+  -- Other projects and tmux panes may still share this host's SSH master.
+  require("features.remote.lsp").stop_for_project(proj)
+  state.active[proj.mount_path] = nil
+  proj._lsp_ready = false
+  proj._servers = nil
+  if state.current == proj then state.current = nil end
+end
+
+-- Every interactive shell uses the same authentication options as the LSP
+-- master, with BatchMode=no so password, passphrase and MFA prompts can appear.
+function M.open_ssh(host, remote_root)
+  if not host then
+    require("features.remote.ssh").pick_host(function(chosen) M.open_ssh(chosen) end)
+    return
+  end
+  host = require("features.remote.ssh").destination(host)
+  if not host then vim.notify("Invalid SSH destination", vim.log.levels.ERROR); return end
+  local extra = remote_root and {
+    "cd " .. vim.fn.shellescape(remote_root) .. ' && exec "$SHELL" -l',
+  } or nil
+  local cmd = M.ssh_argv(host, extra, { batch = false })
+  table.insert(cmd, 2, "-tt")
+  if vim.env.TMUX then
+    local quoted = {}
+    for _, arg in ipairs(cmd) do table.insert(quoted, vim.fn.shellescape(arg)) end
+    vim.system({ "tmux", "split-window", "-h", table.concat(quoted, " ") }, { text = true }, function(result)
+      if result.code ~= 0 then
+        vim.schedule(function() vim.notify(result.stderr or "tmux SSH failed", vim.log.levels.ERROR) end)
+      end
+    end)
+    return
+  end
+  vim.cmd("botright 12new")
+  vim.fn.jobstart(cmd, { term = true })
+  vim.cmd.startinsert()
 end
 
 function M.open_shell()
-  local proj = state.current
-  if not proj then
-    vim.notify("No remote project is connected", vim.log.levels.WARN)
-    return
-  end
-
-  local remote_cmd = string.format(
-    "ssh -t %s %s",
-    vim.fn.shellescape(proj.host),
-    vim.fn.shellescape(
-      "cd " .. vim.fn.shellescape(proj.remote_root) .. ' && exec "$SHELL" -l'
-    )
-  )
-
-  if vim.env.TMUX then
-    vim.system({
-      "tmux",
-      "split-window",
-      "-h",
-      remote_cmd,
-    })
-    return
-  end
-
-  local Ssh = require("sshfs.lib.ssh")
-  Ssh.open_terminal(proj.host, proj.remote_root)
+  local proj = M.current()
+  M.open_ssh(proj and proj.host, proj and proj.remote_root)
 end
 
 function M.toggle_git()
-  local proj = state.current
+  local proj = M.current()
   if not proj then
     vim.notify("No remote project is connected", vim.log.levels.WARN)
     return
@@ -894,7 +821,6 @@ function M.toggle_git()
     probe_ok = proj.probe_ok,
     git_enabled = proj.git_enabled,
   })
-  state.current.git_enabled = proj.git_enabled
 
   local ok, api = pcall(require, "nvim-tree.api")
   if ok then
@@ -921,36 +847,20 @@ function M.toggle_git()
   )
 end
 
-local function connect_new()
-  local SSHConfig = require("sshfs.lib.ssh_config")
-  local hosts = SSHConfig.get_hosts()
-
-  if #hosts == 0 then
-    vim.notify(
-      "No Host entries in ~/.ssh/config. Add an alias, then retry.",
-      vim.log.levels.ERROR
-    )
+function M.connect(host, path)
+  if not host or host == "" then
+    require("features.remote.ssh").pick_host(function(chosen) M.connect(chosen, path) end)
     return
   end
-
-  vim.ui.select(hosts, {
-    prompt = "SSH host",
-  }, function(host)
-    if not host then
-      return
-    end
-
-    vim.ui.input({
-      prompt = "Remote path: ",
-      default = "~",
-    }, function(path)
-      if not path or vim.trim(path) == "" then
-        return
-      end
-      M.open_project(host, path, { prompt_lsp = true })
-    end)
+  host = require("features.remote.ssh").destination(host)
+  if not host then vim.notify("Invalid SSH destination", vim.log.levels.ERROR); return end
+  if path and path ~= "" then M.open_project(host, path); return end
+  vim.ui.input({ prompt = "Remote path: ", default = "~" }, function(value)
+    if value and vim.trim(value) ~= "" then M.open_project(host, value) end
   end)
 end
+
+local function connect_new() M.connect() end
 
 function M.pick_project()
   local items = {}
@@ -1055,9 +965,38 @@ function M.setup()
     callback = keep_editor_state_local,
   })
 
-  vim.api.nvim_create_user_command("RemoteProject", function()
-    M.pick_project()
-  end, { desc = "Connect to a remembered or new SSH project" })
+  local hosts = function() return require("features.remote.ssh").hosts() end
+  vim.api.nvim_create_user_command("RemoteProject", function(opts)
+    if #opts.fargs == 0 then M.pick_project()
+    elseif #opts.fargs <= 2 then M.connect(opts.fargs[1], opts.fargs[2])
+    else vim.notify("Usage: RemoteProject [user@host [path]]", vim.log.levels.ERROR) end
+  end, { nargs = "*", complete = hosts, desc = "Pick or directly connect to an SSH project" })
+
+  vim.api.nvim_create_user_command("RemoteSSH", function(opts)
+    M.open_ssh(opts.args ~= "" and opts.args or nil)
+  end, { nargs = "?", complete = hosts, desc = "Open SSH without mounting a project" })
+
+  vim.api.nvim_create_user_command("RemoteAuth", function(opts)
+    local function authenticate(host)
+      if not require("features.remote.ssh").destination(host) then
+        vim.notify("Invalid SSH destination", vim.log.levels.ERROR)
+        return
+      end
+      M.authenticate(host, function(ok, err)
+        vim.notify(ok and ("SSH ready: " .. host) or err, ok and vim.log.levels.INFO or vim.log.levels.ERROR)
+      end)
+    end
+    if opts.args ~= "" then authenticate(opts.args)
+    else require("features.remote.ssh").pick_host(authenticate) end
+  end, { nargs = "?", complete = hosts, desc = "Authenticate SSH interactively and share the connection" })
+
+  vim.api.nvim_create_user_command("RemoteConfig", function(opts)
+    require("features.remote.ssh").edit_config(opts.args)
+  end, { nargs = "?", complete = hosts, desc = "Edit an SSH config or jump to a host alias" })
+
+  vim.api.nvim_create_user_command("RemoteHostAdd", function()
+    require("features.remote.ssh").add_host()
+  end, { desc = "Prepare a new SSH host entry for editing and saving" })
 
   vim.api.nvim_create_user_command("RemoteDisconnect", function()
     M.disconnect()
@@ -1068,13 +1007,13 @@ function M.setup()
   end, { desc = "Open an SSH shell at the remote project" })
 
   vim.api.nvim_create_user_command("RemoteLspMode", function()
-    local proj = state.current
+    local proj = M.current()
     if not proj then
       vim.notify("No remote project is connected", vim.log.levels.WARN)
       return
     end
     require("features.remote.lsp").ensure(proj, { prompt = true, force = true })
-  end, { desc = "Re-prompt remote / local / syntax LSP mode" })
+  end, { desc = "Retry remote discovery and fallback choices for this project" })
 
   vim.api.nvim_create_user_command("RemoteGitToggle", function()
     M.toggle_git()
@@ -1083,6 +1022,9 @@ function M.setup()
   vim.keymap.set("n", defaults.keys.project, M.pick_project, {
     desc = "Remote project",
   })
+  vim.keymap.set("n", defaults.keys.direct, function() M.open_ssh() end, { desc = "Direct SSH terminal" })
+  vim.keymap.set("n", defaults.keys.config, function() require("features.remote.ssh").edit_config() end, { desc = "Edit SSH configuration" })
+  vim.keymap.set("n", defaults.keys.add_host, function() require("features.remote.ssh").add_host() end, { desc = "Add SSH host" })
   vim.keymap.set("n", defaults.keys.disconnect, M.disconnect, {
     desc = "Remote disconnect",
   })

@@ -34,10 +34,10 @@ return {
         texlab = {
           build = {
             onSave = true,
-            forwardSearchAfter = true,
+            forwardSearchAfter = false,
           },
           forwardSearch = {
-            executable = "zathura",
+            executable = require("features.tex.defaults").viewer,
             args = {
               "--synctex-forward",
               "%l:1:%f",
